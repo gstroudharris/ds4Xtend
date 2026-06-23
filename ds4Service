@@ -7,8 +7,8 @@
 #      otherwise reuses the saved one. (--setup is where future options will live.)
 #   2. "Installs" / readies the metrics sidecar (it ships next to this script).
 #   3. Launches ds4-server (RAM-optimized) and waits until it's online.
-#   4. Starts the sidecar + the static frontend server, then opens the dashboard in your
-#      browser (only if a dashboard tab isn't already open).
+#   4. Starts the sidecar + agent-tools (sandboxed file I/O) + the static frontend, then opens
+#      the dashboard in your browser (only if a dashboard tab isn't already open).
 #   5. Streams ds4 + frontend debug output live.
 #   6. On Ctrl+C, stops everything it started, announcing each one.
 #
@@ -30,6 +30,7 @@ RUN_DIR="$(mktemp -d "${TMPDIR:-/tmp}/ds4service.XXXXXX")"
 
 SERVER_PORT="${DS4_SERVER_PORT:-8080}"
 SIDE_PORT="${DS4_SIDE_PORT:-8081}"
+AGENT_PORT="${DS4_AGENT_PORT:-8082}"
 WEB_PORT="${DS4_WEB_PORT:-8090}"
 SERVER_CTX="${DS4_CTX:-100000}"
 
@@ -203,6 +204,12 @@ SIDE_LOG="$RUN_DIR/sidecar.log"
 register "metrics-sidecar" "$!"
 printf '    sidecar '; wait_http "http://127.0.0.1:$SIDE_PORT/healthz" 10 && { printf '\n'; ok "sidecar online (model gauge → $(basename "$MODEL"))"; } || { printf '\n'; warn "sidecar slow/own port busy"; }
 
+AGENT_LOG="$RUN_DIR/agent-tools.log"
+( exec python3 "$CODE_DIR/agent_tools.py" --port "$AGENT_PORT" ) > "$AGENT_LOG" 2>&1 &
+register "agent-tools" "$!"
+printf '    agent-tools '
+if wait_http "http://127.0.0.1:$AGENT_PORT/healthz" 10; then echo; ok "agent-tools online (sandboxed file I/O for Agent mode)"; else echo; warn "agent-tools slow/own port busy"; fi
+
 WEB_LOG="$RUN_DIR/frontend.log"
 ( cd "$CODE_DIR" && exec python3 -m http.server "$WEB_PORT" ) > "$WEB_LOG" 2>&1 &
 register "ds4Frontend (web)" "$!"
@@ -216,7 +223,7 @@ say "5. up and running"
 printf '    %sOpen:%s  %shttp://localhost:%s%s\n' "$B" "$RST" "$CYN" "$WEB_PORT" "$RST"
 printf '    Live logs below (%s[ds4-server.log]%s / %s[sidecar.log]%s / %s[frontend.log]%s).  %sPress Ctrl+C to stop everything.%s\n\n' \
   "$CYN" "$RST" "$DIM" "$RST" "$GRN" "$RST" "$B" "$RST"
-tail -n +1 -F "$SERVER_LOG" "$SIDE_LOG" "$WEB_LOG" & TAIL_PID=$!
+tail -n +1 -F "$SERVER_LOG" "$SIDE_LOG" "$AGENT_LOG" "$WEB_LOG" & TAIL_PID=$!
 wait "$TAIL_PID"
 # tail ended on its own (a server died?) — tear down too.
 cleanup

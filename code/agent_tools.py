@@ -101,6 +101,107 @@ def t_write_file(rel, content):
     return {"path": rel, "bytes": len(enc)}
 
 
+def t_edit_file(rel, find, replace):
+    if not find:
+        raise ValueError("empty 'find' string")
+    p = safe_path(rel)
+    if not os.path.isfile(p):
+        raise FileNotFoundError("not a file: %s" % rel)
+    if os.path.getsize(p) > MAX_BYTES:
+        raise ValueError("file too large")
+    try:
+        text = open(p, "rb").read().decode("utf-8")
+    except UnicodeDecodeError:
+        raise ValueError("file is not UTF-8 text")
+    count = text.count(find)
+    if count == 0:
+        raise ValueError("'find' text not found in file")
+    enc = text.replace(find, replace if replace is not None else "").encode("utf-8")
+    if len(enc) > MAX_BYTES:
+        raise ValueError("result too large")
+    with open(p, "wb") as f:
+        f.write(enc)
+    return {"path": rel, "replacements": count, "bytes": len(enc)}
+
+
+def t_mkdir(rel):
+    p = safe_path(rel)
+    if os.path.isfile(p):
+        raise ValueError("a file already exists at that path: %s" % rel)
+    os.makedirs(p, exist_ok=True)
+    return {"path": rel, "created": True}
+
+
+def t_delete(rel):
+    p = safe_path(rel)
+    if p == workspace():
+        raise PermissionError("refusing to delete the workspace root")
+    if os.path.isdir(p):
+        try:
+            os.rmdir(p)            # empty dirs only — no recursive delete
+        except OSError:
+            raise ValueError("directory not empty (refusing recursive delete): %s" % rel)
+        return {"path": rel, "deleted": "directory"}
+    if os.path.isfile(p):
+        os.remove(p)
+        return {"path": rel, "deleted": "file"}
+    raise FileNotFoundError("nothing to delete at: %s" % rel)
+
+
+def t_search(query, rel=""):
+    root = workspace()
+    if not root:
+        raise PermissionError("no workspace selected")
+    if not (query or "").strip():
+        raise ValueError("empty query")
+    base = safe_path(rel)
+    hits, scanned = [], 0
+    for dirpath, dirnames, filenames in os.walk(base):
+        dirnames[:] = [d for d in dirnames if not d.startswith(".")]
+        for fn in filenames:
+            if len(hits) >= 200 or scanned >= 4000:
+                break
+            fp = os.path.join(dirpath, fn)
+            try:
+                if os.path.getsize(fp) > MAX_BYTES:
+                    continue
+                rp = os.path.realpath(fp)
+                if rp != root and not rp.startswith(root + os.sep):
+                    continue
+                scanned += 1
+                with open(fp, "r", encoding="utf-8") as f:
+                    for ln, line in enumerate(f, 1):
+                        if query in line:
+                            hits.append({"file": os.path.relpath(fp, root),
+                                         "line": ln, "text": line.rstrip()[:300]})
+                            if len(hits) >= 200:
+                                break
+            except (OSError, UnicodeDecodeError):
+                continue
+    return {"query": query, "matches": hits, "truncated": len(hits) >= 200}
+
+
+def t_tree(rel=""):
+    root = workspace()
+    base = safe_path(rel)
+    entries, n = [], 0
+    for dirpath, dirnames, filenames in os.walk(base):
+        dirnames[:] = sorted([d for d in dirnames if not d.startswith(".")])
+        rel_dir = os.path.relpath(dirpath, root)
+        if rel_dir != ".":
+            entries.append({"path": rel_dir, "name": os.path.basename(dirpath), "type": "dir",
+                            "depth": rel_dir.count(os.sep) + 1})
+        for fn in sorted(filenames):
+            if fn.startswith("."):
+                continue
+            n += 1
+            if n > 2000:
+                return {"entries": entries, "truncated": True}
+            frel = os.path.relpath(os.path.join(dirpath, fn), root)
+            entries.append({"path": frel, "name": fn, "type": "file", "depth": frel.count(os.sep) + 1})
+    return {"entries": entries, "truncated": False}
+
+
 def browse(path):
     """List immediate sub-directories of an absolute path — for the folder picker only."""
     base = os.path.realpath(os.path.expanduser(path or os.path.expanduser("~")))
@@ -173,6 +274,16 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(t_read_file(b.get("path", "")))
             if path == "/tools/write_file":
                 return self._json(t_write_file(b.get("path", ""), b.get("content", "")))
+            if path == "/tools/search":
+                return self._json(t_search(b.get("query", ""), b.get("path", "")))
+            if path == "/tools/edit_file":
+                return self._json(t_edit_file(b.get("path", ""), b.get("find", ""), b.get("replace", "")))
+            if path == "/tools/mkdir":
+                return self._json(t_mkdir(b.get("path", "")))
+            if path == "/tools/delete":
+                return self._json(t_delete(b.get("path", "")))
+            if path == "/tools/tree":
+                return self._json(t_tree(b.get("path", "")))
             return self._json({"error": "not found"}, 404)
         except PermissionError as e:
             return self._json({"error": str(e), "kind": "denied"}, 403)
