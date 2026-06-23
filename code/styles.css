@@ -201,6 +201,7 @@ kbd {
 .tile__k { font-size: 10.5px; letter-spacing: .8px; text-transform: uppercase; color: var(--text-faint); font-weight: 700; }
 .tile__v { font-family: var(--mono); font-size: 18px; margin-top: 6px; color: var(--text); }
 .tile__v.is-empty { color: var(--text-faint); }
+.tile__v.is-live { color: var(--accent); }   /* live estimate while streaming; reverts to normal when final */
 
 /* GPU utilization + sparkline */
 .util { margin-bottom: var(--gap); }

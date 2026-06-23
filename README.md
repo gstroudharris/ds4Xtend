@@ -2,7 +2,7 @@
 
 A COSMIC-styled HTML frontend for **ds4-server** (antirez/ds4 · DwarfStar). Standalone repo —
 it talks to ds4-server over HTTP, with no source dependency on ds4. See
-[frontend_specs.md](frontend_specs.md) for the full plan.
+[docs/frontend_specs.md](docs/frontend_specs.md) for the full plan.
 
 ## Status: Phases 1–3 complete (live)
 

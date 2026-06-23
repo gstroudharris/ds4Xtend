@@ -102,6 +102,10 @@
     const ui = appendAssistant();
     const t0 = performance.now();
     let tFirst = null, content = "", reasoning = "", usage = null;
+    let outTokEst = 0;
+    const estPrompt = estimateTokens(messages);
+    beginLiveMetrics();
+    const liveTimer = setInterval(() => renderLiveMetrics({ t0, tFirst, outTokEst, estPrompt }), 150);
     abortCtrl = new AbortController();
     try {
       const res = await fetch(C.serverUrl + "/v1/chat/completions", {
@@ -130,8 +134,8 @@
           let j; try { j = JSON.parse(data); } catch { continue; }
           if (j.usage) usage = j.usage;
           const d = (j.choices && j.choices[0] && j.choices[0].delta) || {};
-          if (d.reasoning_content) { if (tFirst === null) tFirst = performance.now(); reasoning += d.reasoning_content; ui.thinking(reasoning); }
-          if (d.content) { if (tFirst === null) tFirst = performance.now(); content += d.content; ui.stream(content); }
+          if (d.reasoning_content) { if (tFirst === null) tFirst = performance.now(); reasoning += d.reasoning_content; outTokEst++; ui.thinking(reasoning); }
+          if (d.content) { if (tFirst === null) tFirst = performance.now(); content += d.content; outTokEst++; ui.stream(content); }
         }
       }
       // Fallback: some builds embed thinking inline as <think>…</think> in content.
@@ -142,16 +146,17 @@
       ui.finalize(content);
       messages.push({ role: "assistant", content });
       const tEnd = performance.now();
-      updateTurnMetrics({ t0, tFirst, tEnd, usage });
+      finalizeTurnMetrics({ t0, tFirst, tEnd, usage, outTokEst, estPrompt });
       if (usage) {
         const decSecs = (tEnd - (tFirst == null ? tEnd : tFirst)) / 1000;
         const tps = usage.completion_tokens && decSecs > 0 ? (usage.completion_tokens / decSecs).toFixed(1) : "?";
         ui.meta(`${tps} t/s · ${usage.completion_tokens == null ? "?" : usage.completion_tokens} tokens · ${((tEnd - t0) / 1000).toFixed(1)} s`);
       }
     } catch (e) {
-      if (e.name === "AbortError") { ui.finalize(content || "_(stopped)_"); }
+      if (e.name === "AbortError") { ui.finalize(content || "_(stopped)_"); finalizeTurnMetrics({ t0, tFirst, tEnd: performance.now(), usage, outTokEst, estPrompt }); }
       else ui.error(String(e.message || e));
     } finally {
+      clearInterval(liveTimer);
       streaming = false; setSendStop(false); abortCtrl = null;
     }
   }
@@ -163,22 +168,45 @@
     b.classList.toggle("btn--primary", !s);
   }
 
-  /* ---------------- per-turn metrics ---------------- */
-  function updateTurnMetrics({ t0, tFirst, tEnd, usage }) {
+  /* ---------------- per-turn metrics (live while streaming → exact at end) ---------------- */
+  const TURN_IDS = ["mTtft", "mTotal", "mPrefill", "mDecode", "mPrompt", "mOutput"];
+  function setTile(id, v, live) { const e = $(id); if (!e) return; e.textContent = v; e.classList.remove("is-empty"); e.classList.toggle("is-live", !!live); }
+
+  // rough token estimate from text (~4 chars/token) for live figures before exact usage arrives
+  function estimateTokens(msgs) { let c = 0; for (const m of msgs) c += (m.content || "").length; return Math.max(1, Math.round(c / 4)); }
+
+  function beginLiveMetrics() {
+    setTile("mTtft", "…", true); setTile("mTotal", "0.0 s", true);
+    setTile("mPrefill", "…", true); setTile("mDecode", "…", true);
+    setTile("mPrompt", "—", true); setTile("mOutput", "~0", true);
+  }
+  function renderLiveMetrics({ t0, tFirst, outTokEst, estPrompt }) {
+    const now = performance.now();
+    setTile("mTotal", ((now - t0) / 1000).toFixed(1) + " s", true);
+    setTile("mPrompt", "~" + estPrompt, true);
+    setTile("mOutput", "~" + outTokEst, true);
+    if (tFirst != null) {
+      const ttft = (tFirst - t0) / 1000;
+      setTile("mTtft", ttft.toFixed(2) + " s", true);
+      if (ttft > 0) setTile("mPrefill", "~" + Math.round(estPrompt / ttft) + " t/s", true);
+      const dsec = (now - tFirst) / 1000;
+      if (dsec > 0.25) setTile("mDecode", "~" + (outTokEst / dsec).toFixed(1) + " t/s", true);
+    }
+  }
+  function finalizeTurnMetrics({ t0, tFirst, tEnd, usage, outTokEst, estPrompt }) {
     const ttft = tFirst != null ? (tFirst - t0) / 1000 : null;
     const total = (tEnd - t0) / 1000;
-    const pt = usage && usage.prompt_tokens, ot = usage && usage.completion_tokens;
-    setText("mTtft", ttft != null ? ttft.toFixed(2) + " s" : "—");
-    setText("mTotal", total.toFixed(2) + " s");
-    setText("mPrefill", pt && ttft ? (pt / ttft).toFixed(1) + " t/s" : "—");
-    setText("mDecode", ot && ttft != null && total - ttft > 0 ? (ot / (total - ttft)).toFixed(1) + " t/s" : "—");
-    setText("mPrompt", pt != null ? String(pt) : "—");
-    setText("mOutput", ot != null ? String(ot) : "—");
+    const pt = (usage && usage.prompt_tokens != null) ? usage.prompt_tokens : estPrompt;
+    const ot = (usage && usage.completion_tokens != null) ? usage.completion_tokens : outTokEst;
+    setTile("mTtft", ttft != null ? ttft.toFixed(2) + " s" : "—", false);
+    setTile("mTotal", total.toFixed(2) + " s", false);
+    setTile("mPrefill", (pt && ttft) ? (pt / ttft).toFixed(1) + " t/s" : "—", false);
+    setTile("mDecode", (ot && ttft != null && total - ttft > 0) ? (ot / (total - ttft)).toFixed(1) + " t/s" : "—", false);
+    setTile("mPrompt", pt != null ? String(pt) : "—", false);
+    setTile("mOutput", ot != null ? String(ot) : "—", false);
   }
   function resetTurnMetrics() {
-    ["mTtft", "mTotal", "mPrefill", "mDecode", "mPrompt", "mOutput"].forEach((id) => {
-      const e = $(id); e.textContent = "—"; e.classList.add("is-empty");
-    });
+    TURN_IDS.forEach((id) => { const e = $(id); e.textContent = "—"; e.classList.add("is-empty"); e.classList.remove("is-live"); });
   }
 
   /* ---------------- minimal markdown (safe %%CB<n>%% code placeholder) ---------------- */

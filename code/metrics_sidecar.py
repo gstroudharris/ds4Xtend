@@ -18,7 +18,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 PAGE = os.sysconf("SC_PAGE_SIZE")
 _libc = ctypes.CDLL(ctypes.util.find_library("c") or "libc.so.6", use_errno=True)
 _lock = threading.Lock()
-_state = {"disk": None, "resident": None, "resident_ts": 0.0}
+_state = {"disk": None, "resident": None, "resident_ts": 0.0, "metrics_hits": 0}
 _BIT0 = bytes((v & 1) for v in range(256))  # translate table: byte -> low bit
 
 GPU_FIELDS = ("name", "utilization.gpu", "temperature.gpu", "power.draw",
@@ -159,8 +159,10 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         if self.path.startswith("/healthz"):
-            return self._json({"ok": True})
+            return self._json({"ok": True, "metrics_hits": _state["metrics_hits"]})
         if self.path.startswith("/metrics"):
+            with _lock:
+                _state["metrics_hits"] += 1
             model = model_residency(self.model_path) if self.model_path else None
             sample = {
                 "ts": time.time(),

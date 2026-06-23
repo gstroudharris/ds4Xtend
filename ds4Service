@@ -3,15 +3,19 @@
 #   ds4-server (inference, :8080)  +  metrics sidecar (:8081)  +  ds4Frontend web UI (:8090)
 #
 # What it does:
-#   1. Asks for (and remembers) the ds4 install directory, verifying it's a real build.
+#   1. On first run (or with --setup), asks for + remembers the ds4 install directory;
+#      otherwise reuses the saved one. (--setup is where future options will live.)
 #   2. "Installs" / readies the metrics sidecar (it ships next to this script).
 #   3. Launches ds4-server (RAM-optimized) and waits until it's online.
-#   4. Starts the sidecar + the static frontend server.
+#   4. Starts the sidecar + the static frontend server, then opens the dashboard in your
+#      browser (only if a dashboard tab isn't already open).
 #   5. Streams ds4 + frontend debug output live.
 #   6. On Ctrl+C, stops everything it started, announcing each one.
 #
 # Ports/context overridable via env: DS4_SERVER_PORT DS4_SIDE_PORT DS4_WEB_PORT DS4_CTX
-# Skip model warming with DS4_NO_WARM=1.  Re-prompt for the dir with: ds4Service --reconfigure
+# Skip model warming with DS4_NO_WARM=1.  Re-run setup (change the dir, future options): --setup
+# Browser: auto-opens the dashboard unless a tab is already open. DS4_NO_BROWSER=1 disables;
+# DS4_OPENER=<cmd> sets the opener (default: xdg-open).
 set -uo pipefail
 
 # ---------- locations ----------
@@ -76,6 +80,23 @@ wait_http() {  # url timeout_s
 }
 port_in_use() { ss -ltn 2>/dev/null | grep -q ":$1 "; }
 
+# Open the dashboard in a browser unless one already appears open. An open tab polls the
+# sidecar's /metrics ~2x/s, so a rising hit count means a dashboard is already up (works on
+# Wayland and X11 alike). DS4_NO_BROWSER=1 disables; DS4_OPENER overrides the opener.
+open_dashboard() {
+  local url="http://localhost:$WEB_PORT"
+  if [ "${DS4_NO_BROWSER:-0}" = "1" ]; then ok "browser auto-open off (DS4_NO_BROWSER=1) — visit $url"; return; fi
+  if [ -z "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]; then warn "no display — open $url in a browser"; return; fi
+  local hits='import sys,json; print(json.load(sys.stdin).get("metrics_hits",0))'
+  local h0 h1
+  h0=$(curl -s "http://127.0.0.1:$SIDE_PORT/healthz" 2>/dev/null | python3 -c "$hits" 2>/dev/null); h0=${h0:-0}
+  sleep 1.3
+  h1=$(curl -s "http://127.0.0.1:$SIDE_PORT/healthz" 2>/dev/null | python3 -c "$hits" 2>/dev/null); h1=${h1:-0}
+  if [ "$h1" -gt "$h0" ]; then ok "dashboard already open (polling detected) — leaving your tab as-is"; return; fi
+  ok "opening dashboard → $url"
+  ( "${DS4_OPENER:-xdg-open}" "$url" >/dev/null 2>&1 & ) 2>/dev/null
+}
+
 verify_dir() {  # candidate -> sets DS4_DIR, MODEL
   local d="${1/#\~/$HOME}"
   [ -n "$d" ] && [ -d "$d" ]            || { errln "not a directory: ${1:-<empty>}"; return 1; }
@@ -89,20 +110,35 @@ printf '%s%sds4Service%s  —  DS4 inference + web UI launcher\n\n' "$B" "$CYN" 
 
 # ---------- 1. ds4 install directory ----------
 say "1. ds4 install directory"
+SETUP=0; [ "${1:-}" = "--setup" ] && SETUP=1
 saved=""; [ -f "$CONFIG_FILE" ] && saved="$(cat "$CONFIG_FILE" 2>/dev/null)"
-[ "${1:-}" = "--reconfigure" ] && saved=""
-default="${saved:-/home/grant/Dev/ds4}"
-while :; do
-  read -r -p "    Path to ds4 install [$default]: " ans || { echo; exit 1; }
-  ans="${ans:-$default}"
-  if verify_dir "$ans"; then
-    ok "verified: $DS4_DIR"
-    mkdir -p "$CONFIG_DIR"; printf '%s\n' "$DS4_DIR" > "$CONFIG_FILE"
-    ok "saved to $CONFIG_FILE"
-    break
-  fi
-  default="$ans"
-done
+
+# Interactive setup. Today this is just the ds4 install dir; future options go here too.
+run_setup() {
+  local default="${saved:-/home/grant/Dev/ds4}"
+  while :; do
+    read -r -p "    Path to ds4 install [$default]: " ans || { echo; exit 1; }
+    ans="${ans:-$default}"
+    if verify_dir "$ans"; then
+      ok "verified: $DS4_DIR"
+      mkdir -p "$CONFIG_DIR"; printf '%s\n' "$DS4_DIR" > "$CONFIG_FILE"
+      ok "saved to $CONFIG_FILE"
+      return 0
+    fi
+    default="$ans"
+  done
+}
+
+if [ "$SETUP" = "1" ]; then
+  ok "setup requested (--setup)"
+  run_setup
+elif [ -n "$saved" ] && verify_dir "$saved"; then
+  ok "using saved ds4 install: $DS4_DIR"
+  printf '    %s(re-run with --setup to change)%s\n' "$DIM" "$RST"
+else
+  [ -n "$saved" ] && warn "saved ds4 dir no longer valid ($saved) — running setup"
+  run_setup
+fi
 
 # ---------- 2. metrics sidecar ----------
 say "2. metrics sidecar"
@@ -141,6 +177,9 @@ WEB_LOG="$RUN_DIR/frontend.log"
 ( cd "$CODE_DIR" && exec python3 -m http.server "$WEB_PORT" ) > "$WEB_LOG" 2>&1 &
 register "ds4Frontend (web)" "$!"
 printf '    frontend '; wait_http "http://127.0.0.1:$WEB_PORT/index.html" 10 && { printf '\n'; ok "frontend online"; } || { printf '\n'; warn "frontend slow/own port busy"; }
+
+# ---------- 4b. open the dashboard ----------
+open_dashboard
 
 # ---------- 5. stream logs ----------
 say "5. up and running"
