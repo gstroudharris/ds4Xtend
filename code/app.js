@@ -387,6 +387,7 @@
     return {
       thinking(t) { think.hidden = false; think.querySelector(".think__body").textContent = t; agScroll(); },
       stream(t) { body.textContent = t; agScroll(); },
+      cursorOff() { cur.remove(); },   // hand the cursor to the active tool/preview — never two at once
       finalize(t) { cur.remove(); body.classList.remove("is-streaming"); if (t) { body.innerHTML = mdRender(t); addCopy(body); } else { root.remove(); } think.open = false; },
     };
   }
@@ -473,8 +474,9 @@
   }
   async function execToolCall(name, args, card) {
     if (MUTATING[name] && agentMode === "ask") {
-      const a = await approvalFor(name, args);
-      const ok = await askConfirm(a.title, a.body);
+      let ok;
+      if (card.approve) ok = await card.approve((name === "edit_file" ? "edit to " : "write to ") + args.path);  // inline on the live preview
+      else { const a = await approvalFor(name, args); ok = await askConfirm(a.title, a.body); }
       if (!ok) { card.result({ error: "declined by user" }, "skip"); return { error: "user declined the " + name }; }
     }
     const res = await callTool(name, args);
@@ -488,9 +490,85 @@
     return res;
   }
 
+  // tolerant extractor: pull a (possibly still-streaming) JSON string value by key, decoding escapes.
+  function partialString(args, key) {
+    const BS = 92, tag = '"' + key + '"';
+    let i = args.indexOf(tag);
+    if (i < 0) return null;
+    i = args.indexOf('"', i + tag.length);   // opening quote of the value
+    if (i < 0) return null;
+    i++;
+    let out = "";
+    const m = { n: 10, t: 9, r: 13, b: 8, f: 12 };
+    while (i < args.length) {
+      if (args.charCodeAt(i) === BS) {        // backslash escape (no backslash literal in source)
+        const n = args[i + 1];
+        if (n === undefined) break;           // incomplete escape at the streaming edge
+        if (n === "u") {
+          const hex = args.substr(i + 2, 4);
+          if (hex.length < 4) break;
+          out += String.fromCharCode(parseInt(hex, 16)); i += 6; continue;
+        }
+        out += (m[n] !== undefined) ? String.fromCharCode(m[n]) : n;
+        i += 2; continue;
+      }
+      if (args[i] === '"') break;             // closing quote → value complete
+      out += args[i]; i++;
+    }
+    return out;
+  }
+
+  // inline live preview of a file being written/edited — streams content with a terminal cursor.
+  function writePreview(toolName) {
+    const verb = toolName === "edit_file" ? "Editing" : "Writing";
+    const wrap = document.createElement("div"); wrap.className = "wprev";
+    const head = document.createElement("button"); head.className = "wprev__head"; head.type = "button";
+    const caret = document.createElement("span"); caret.className = "wprev__caret"; caret.textContent = "▾";
+    const titleEl = document.createElement("span"); titleEl.className = "wprev__title";
+    const stateEl = document.createElement("span"); stateEl.className = "wprev__state"; stateEl.textContent = "writing…";
+    head.append(caret, titleEl, stateEl);
+    const pre = document.createElement("pre"); pre.className = "wprev__pre";
+    const codeEl = document.createElement("span");
+    const cursor = document.createElement("span"); cursor.className = "wprev__cursor";
+    pre.append(codeEl, cursor);
+    const actions = document.createElement("div"); actions.className = "wprev__actions"; actions.hidden = true;
+    wrap.append(head, pre, actions);
+    agentMessagesEl.appendChild(wrap); agScroll();
+    let path = "", collapsed = false;
+    const setTitle = () => { titleEl.textContent = verb + " " + (path || "…"); };
+    setTitle();
+    head.addEventListener("click", () => {
+      collapsed = !collapsed;
+      wrap.classList.toggle("is-collapsed", collapsed);
+      caret.textContent = collapsed ? "▸" : "▾";
+    });
+    return {
+      setPath(p) { if (p && p !== path) { path = p; setTitle(); } },
+      stream(text) { codeEl.textContent = text; pre.scrollTop = pre.scrollHeight; agScroll(); },
+      approve(label) {
+        stateEl.textContent = "awaiting approval";
+        actions.hidden = false; actions.textContent = "";
+        const q = document.createElement("span"); q.className = "wprev__ask"; q.textContent = "Apply " + (label || "this change") + "?";
+        const no = document.createElement("button"); no.className = "btn btn--ghost"; no.type = "button"; no.textContent = "Decline";
+        const yes = document.createElement("button"); yes.className = "btn btn--primary"; yes.type = "button"; yes.textContent = "Approve";
+        actions.append(q, no, yes);
+        return new Promise((resolve) => {
+          yes.addEventListener("click", () => { actions.hidden = true; resolve(true); });
+          no.addEventListener("click", () => { actions.hidden = true; resolve(false); });
+        });
+      },
+      result(res, kind) {
+        cursor.remove();
+        const skip = kind === "skip", err = !skip && res && res.error;
+        stateEl.className = "wprev__state wprev__state--" + (skip ? "skip" : err ? "err" : "ok");
+        stateEl.textContent = skip ? "declined" : err ? "error" : (res && res.bytes != null ? res.bytes + " bytes" : "done");
+      },
+    };
+  }
+
   async function agentStreamTurn() {
     const ui = agAssistant();
-    let content = "", reasoning = "", tcs = [];
+    let content = "", reasoning = "", tcs = [], previews = {};
     const res = await fetch(C.serverUrl + "/v1/chat/completions", {
       method: "POST", headers: { "Content-Type": "application/json" }, signal: agentAbort.signal,
       body: JSON.stringify({ model: C.model, stream: true, tools: TOOLS, tool_choice: "auto", messages: [{ role: "system", content: AGENT_SYSTEM }, ...agentMsgs], ...(thinkingOn ? {} : { thinking: { type: "disabled" } }) }),
@@ -509,9 +587,16 @@
         if (d.reasoning_content) { reasoning += d.reasoning_content; ui.thinking(reasoning); }
         if (d.content) { content += d.content; ui.stream(content); }
         if (d.tool_calls) for (const t of d.tool_calls) {
+          ui.cursorOff();                                    // the tool/preview owns the cursor now
           const i = t.index || 0; tcs[i] = tcs[i] || { id: "", name: "", args: "" };
           if (t.id) tcs[i].id = t.id;
           if (t.function) { if (t.function.name) tcs[i].name = t.function.name; if (t.function.arguments) tcs[i].args += t.function.arguments; }
+          if (tcs[i].name === "write_file" || tcs[i].name === "edit_file") {   // live preview while args stream
+            if (!previews[i]) { previews[i] = writePreview(tcs[i].name); tcs[i].preview = previews[i]; }
+            const pp = partialString(tcs[i].args, "path"); if (pp != null) previews[i].setPath(pp);
+            const bodyText = partialString(tcs[i].args, tcs[i].name === "write_file" ? "content" : "replace");
+            if (bodyText != null) previews[i].stream(bodyText);
+          }
         }
       }
     }
@@ -534,7 +619,7 @@
         if (!turn.toolCalls.length) break;
         for (const tc of turn.toolCalls) {
           let args = {}; try { args = JSON.parse(tc.args || "{}"); } catch { args = {}; }
-          const card = agToolCard(tc.name, args);
+          const card = tc.preview || agToolCard(tc.name, args);
           const res = await execToolCall(tc.name, args, card);
           agentMsgs.push({ role: "tool", tool_call_id: tc.id, content: JSON.stringify(res).slice(0, 100000) });
         }
