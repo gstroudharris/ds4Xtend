@@ -36,6 +36,7 @@
     toggle.classList.toggle("is-agent", agent);
     toggle.querySelectorAll(".segmented__btn").forEach((b) => b.classList.toggle("is-active", b.dataset.mode === mode));
     agentPanel.hidden = !agent;
+    $("leftRail").hidden = !agent;            // working-tree rail is agent-only
     messagesEl.hidden = agent;
     emptyState.hidden = agent || messages.length > 0;
     const ae = $("agentEmpty"); if (ae) ae.hidden = agentMsgs.length > 0;
@@ -43,6 +44,18 @@
       ? (workspace ? "Ask the agent to read or edit files in the folder…" : "Choose a folder for the agent first…")
       : "Message DS4… (Enter to send, Shift+Enter for newline)";
   }
+
+  /* ---------------- collapsible side rails ---------------- */
+  function wireRail(railId, btnId, collapseArrow, expandArrow, lsKey) {
+    const rail = $(railId), btn = $(btnId);
+    if (!rail || !btn) return;
+    const apply = (c) => { rail.classList.toggle("is-collapsed", c); btn.textContent = c ? expandArrow : collapseArrow; btn.title = c ? "Expand panel" : "Collapse panel"; };
+    let collapsed = false; try { collapsed = localStorage.getItem(lsKey) === "1"; } catch (e) {}
+    apply(collapsed);
+    btn.addEventListener("click", () => { collapsed = !collapsed; apply(collapsed); try { localStorage.setItem(lsKey, collapsed ? "1" : "0"); } catch (e) {} });
+  }
+  wireRail("leftRail", "leftRailToggle", "«", "»", "ds4:lrail");
+  wireRail("rightRail", "rightRailToggle", "»", "«", "ds4:rrail");
 
   /* ---------------- composer ---------------- */
   const input = $("input");
@@ -81,22 +94,47 @@
     messagesEl.appendChild(el); scrollDown(true);
   }
 
+  // typewriter: smoothly reveal streamed text char-by-char (monitor-fps via rAF) with a leading cursor
+  function makeTyper(textEl, cursorEl, onFrame) {
+    let target = "", shown = 0, raf = 0, dead = false;
+    function paint() {
+      raf = 0;
+      if (dead || shown >= target.length) return;
+      const remaining = target.length - shown;
+      shown += Math.min(40, Math.max(1, Math.ceil(remaining / 7)));   // rapid typing; catches up so it never lags far behind the stream
+      if (shown > target.length) shown = target.length;
+      textEl.textContent = target.slice(0, shown);
+      if (onFrame) onFrame();
+      schedule();
+    }
+    function schedule() { if (!raf && !dead) raf = requestAnimationFrame(paint); }
+    return {
+      feed(full) { target = full || ""; if (shown > target.length) { shown = target.length; textEl.textContent = target; } schedule(); },
+      flush() { shown = target.length; textEl.textContent = target; if (onFrame) onFrame(); },
+      finish() { dead = true; if (raf) cancelAnimationFrame(raf); textEl.textContent = target; },
+    };
+  }
+
   function appendAssistant() {
     const root = document.createElement("div"); root.className = "msg msg--assistant";
     const think = document.createElement("details"); think.className = "think"; think.open = true; think.hidden = true;
     think.innerHTML = '<summary>Thinking</summary><div class="think__body"></div>';
     const thinkBody = think.querySelector(".think__body");
+    const thinkText = document.createElement("span"); const thinkCur = document.createElement("span"); thinkCur.className = "cursor"; thinkCur.hidden = true;
+    thinkBody.append(thinkText, thinkCur);
     const body = document.createElement("div"); body.className = "md is-streaming";
-    const cursor = document.createElement("span"); cursor.className = "cursor";
+    const bodyText = document.createElement("span"); const bodyCur = document.createElement("span"); bodyCur.className = "cursor"; bodyCur.hidden = true;
+    body.append(bodyText, bodyCur);
     const meta = document.createElement("div"); meta.className = "msg__meta"; meta.hidden = true;
-    root.append(think, body, cursor, meta);
+    root.append(think, body, meta);
     messagesEl.appendChild(root); scrollDown(true);
+    const tT = makeTyper(thinkText, thinkCur, scrollDown), bT = makeTyper(bodyText, bodyCur, scrollDown);
     return {
-      thinking(t) { think.hidden = false; thinkBody.textContent = t; scrollDown(); },
-      stream(t) { body.textContent = t; scrollDown(); },
-      finalize(content) { cursor.remove(); body.classList.remove("is-streaming"); body.innerHTML = mdRender(content); addCopy(body); think.open = false; },
+      thinking(t) { think.hidden = false; thinkCur.hidden = false; tT.feed(t); },
+      stream(t) { thinkCur.hidden = true; tT.flush(); bodyCur.hidden = false; bT.feed(t); },
+      finalize(content) { tT.finish(); bT.finish(); thinkCur.remove(); bodyCur.remove(); body.classList.remove("is-streaming"); body.innerHTML = mdRender(content); addCopy(body); think.open = false; },
       meta(s) { meta.hidden = false; meta.textContent = s; },
-      error(msg) { cursor.remove(); root.classList.add("msg--error"); body.classList.remove("is-streaming"); body.textContent = "⚠ " + msg; },
+      error(msg) { tT.finish(); bT.finish(); thinkCur.remove(); bodyCur.remove(); root.classList.add("msg--error"); body.classList.remove("is-streaming"); body.textContent = "⚠ " + msg; },
     };
   }
 
@@ -381,14 +419,19 @@
     const root = document.createElement("div"); root.className = "msg msg--assistant";
     const think = document.createElement("details"); think.className = "think"; think.open = true; think.hidden = true;
     think.innerHTML = '<summary>Thinking</summary><div class="think__body"></div>';
+    const thinkBody = think.querySelector(".think__body");
+    const thinkText = document.createElement("span"); const thinkCur = document.createElement("span"); thinkCur.className = "cursor"; thinkCur.hidden = true;
+    thinkBody.append(thinkText, thinkCur);
     const body = document.createElement("div"); body.className = "md is-streaming";
-    const cur = document.createElement("span"); cur.className = "cursor";
-    root.append(think, body, cur); agentMessagesEl.appendChild(root); agScroll();
+    const bodyText = document.createElement("span"); const bodyCur = document.createElement("span"); bodyCur.className = "cursor"; bodyCur.hidden = true;
+    body.append(bodyText, bodyCur);
+    root.append(think, body); agentMessagesEl.appendChild(root); agScroll();
+    const tT = makeTyper(thinkText, thinkCur, scrollDown), bT = makeTyper(bodyText, bodyCur, scrollDown);
     return {
-      thinking(t) { think.hidden = false; think.querySelector(".think__body").textContent = t; agScroll(); },
-      stream(t) { body.textContent = t; agScroll(); },
-      cursorOff() { cur.remove(); },   // hand the cursor to the active tool/preview — never two at once
-      finalize(t) { cur.remove(); body.classList.remove("is-streaming"); if (t) { body.innerHTML = mdRender(t); addCopy(body); } else { root.remove(); } think.open = false; },
+      thinking(t) { think.hidden = false; thinkCur.hidden = false; tT.feed(t); },
+      stream(t) { thinkCur.hidden = true; tT.flush(); bodyCur.hidden = false; bT.feed(t); },
+      cursorOff() { thinkCur.hidden = true; bodyCur.hidden = true; tT.flush(); bT.flush(); },   // tool/preview owns the cursor now
+      finalize(t) { tT.finish(); bT.finish(); thinkCur.remove(); bodyCur.remove(); body.classList.remove("is-streaming"); if (t) { body.innerHTML = mdRender(t); addCopy(body); } else { root.remove(); } think.open = false; },
     };
   }
   function agError(msg) { const e = document.createElement("div"); e.className = "msg msg--assistant msg--error"; const b = document.createElement("div"); b.className = "md"; b.textContent = "⚠ " + msg; e.appendChild(b); agentMessagesEl.appendChild(e); agScroll(); }
@@ -534,6 +577,7 @@
     const actions = document.createElement("div"); actions.className = "wprev__actions"; actions.hidden = true;
     wrap.append(head, pre, actions);
     agentMessagesEl.appendChild(wrap); agScroll();
+    const wT = makeTyper(codeEl, cursor, () => { pre.scrollTop = pre.scrollHeight; scrollDown(); });
     let path = "", collapsed = false;
     const setTitle = () => { titleEl.textContent = verb + " " + (path || "…"); };
     setTitle();
@@ -544,7 +588,7 @@
     });
     return {
       setPath(p) { if (p && p !== path) { path = p; setTitle(); } },
-      stream(text) { codeEl.textContent = text; pre.scrollTop = pre.scrollHeight; agScroll(); },
+      stream(text) { wT.feed(text); },
       approve(label) {
         stateEl.textContent = "awaiting approval";
         actions.hidden = false; actions.textContent = "";
@@ -558,7 +602,7 @@
         });
       },
       result(res, kind) {
-        cursor.remove();
+        wT.finish(); cursor.remove();
         const skip = kind === "skip", err = !skip && res && res.error;
         stateEl.className = "wprev__state wprev__state--" + (skip ? "skip" : err ? "err" : "ok");
         stateEl.textContent = skip ? "declined" : err ? "error" : (res && res.bytes != null ? res.bytes + " bytes" : "done");

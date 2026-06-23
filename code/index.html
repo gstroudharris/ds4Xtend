@@ -8,6 +8,17 @@
 </head>
 <body>
   <div class="app">
+    <!-- ===================== LEFT RAIL (working tree · agent only) ===================== -->
+    <aside class="lrail" id="leftRail" hidden>
+      <div class="rail__hd">
+        <span class="rail__ttl">Working tree</span>
+        <button class="rail__icon" id="fileTreeRefresh" title="Refresh">⟳</button>
+        <button class="rail__toggle" id="leftRailToggle" title="Collapse panel">«</button>
+      </div>
+      <div class="rail__body">
+        <div class="filetree__list" id="fileTreeList"><div class="filetree__empty">lock a folder to see files</div></div>
+      </div>
+    </aside>
     <!-- ===================== MAIN ===================== -->
     <main class="main">
       <header class="topbar">
@@ -72,16 +83,8 @@
             </div>
           </div>
 
-          <div class="agent__main">
-            <aside class="filetree" id="fileTree">
-              <div class="filetree__hd"><span>Files</span><button class="filetree__refresh" id="fileTreeRefresh" title="Refresh">⟳</button></div>
-              <div class="filetree__list" id="fileTreeList"><div class="filetree__empty">lock a folder to see files</div></div>
-            </aside>
-            <div class="agent__convo">
-              <div class="messages" id="agentMessages"></div>
-              <div class="agent__empty" id="agentEmpty">Lock a folder, then ask the agent to read or edit files in it.</div>
-            </div>
-          </div>
+          <div class="messages" id="agentMessages"></div>
+          <div class="agent__empty" id="agentEmpty">Lock a folder, then ask the agent to read or edit files in it.</div>
         </div>
 
         <div class="messages" id="messages"></div>
@@ -104,7 +107,12 @@
     </main>
 
     <!-- ===================== TELEMETRY RAIL ===================== -->
-    <aside class="rail">
+    <aside class="rail" id="rightRail">
+      <div class="rail__hd">
+        <button class="rail__toggle" id="rightRailToggle" title="Collapse panel">»</button>
+        <span class="rail__ttl">Telemetry</span>
+      </div>
+      <div class="rail__body">
       <section>
         <div class="rail__label">This turn</div>
         <div class="tiles">
@@ -152,6 +160,7 @@
           <dl id="backendDl"></dl>
         </div>
       </details>
+      </div>
     </aside>
   </div>
 

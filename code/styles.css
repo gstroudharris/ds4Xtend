@@ -27,6 +27,7 @@
   --r-card: 14px; --r-tile: 12px; --r-btn: 10px; --r-pill: 999px;
   --gap: 12px; --pad: 16px;
   --rail-w: 340px;
+  --lrail-w: 264px;
 
   --font: "Fira Sans", "Inter", system-ui, -apple-system, sans-serif;
   --mono: "Fira Mono", "JetBrains Mono", ui-monospace, "SF Mono", monospace;
@@ -63,11 +64,35 @@ kbd {
 
 /* ---------------- layout ---------------- */
 .app {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) var(--rail-w);
+  display: flex;
   height: 100vh;
+  overflow: hidden;
 }
-.main { display: flex; flex-direction: column; min-width: 0; }
+.main { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+
+/* ---------------- collapsible side rails ---------------- */
+.lrail, .rail {
+  flex: none; background: var(--surface);
+  display: flex; flex-direction: column; min-height: 0;
+  transition: width .18s ease;
+}
+.lrail { width: var(--lrail-w); border-right: 1px solid var(--border); }
+.rail  { width: var(--rail-w);  border-left:  1px solid var(--border); }
+.lrail.is-collapsed, .rail.is-collapsed { width: 46px; }
+.rail__hd { display: flex; align-items: center; gap: 8px; padding: 14px 16px 8px; flex: none; }
+.rail__ttl { text-transform: uppercase; letter-spacing: 1px; font-size: 11px; color: var(--text-faint); font-weight: 700; white-space: nowrap; }
+.lrail .rail__ttl { margin-right: auto; }
+.rail__toggle, .rail__icon {
+  appearance: none; border: 1px solid var(--border); background: var(--surface-2); color: var(--text-dim);
+  width: 26px; height: 26px; border-radius: 8px; cursor: pointer; display: inline-grid; place-items: center;
+  font-size: 13px; line-height: 1; flex: none; padding: 0;
+}
+.rail__toggle:hover, .rail__icon:hover { background: var(--surface-3); color: var(--text); }
+.rail__body { flex: 1; min-height: 0; overflow: auto; }
+.rail  .rail__body { padding: 4px 16px 24px; display: flex; flex-direction: column; gap: 22px; }
+.lrail .rail__body { padding: 2px 6px 10px; }
+.is-collapsed .rail__body, .is-collapsed .rail__ttl, .is-collapsed .rail__icon { display: none; }
+.is-collapsed .rail__hd { padding: 12px 0; justify-content: center; }
 
 /* ---------------- top bar ---------------- */
 .topbar {
@@ -118,7 +143,7 @@ kbd {
 .status[data-state="connecting"] .status__dot { background: var(--warn); }
 
 /* ---------------- conversation ---------------- */
-.conversation { flex: 1; overflow: auto; padding: 24px; }
+.conversation { flex: 1; overflow: auto; min-height: 0; padding: 24px; }
 
 .empty { max-width: 760px; margin: 8vh auto 0; text-align: center; }
 .empty__title { font-size: 28px; font-weight: 600; margin: 0 0 8px; }
@@ -190,11 +215,6 @@ kbd {
 .btn--ghost:hover { background: var(--surface-3); color: var(--text); }
 
 /* ---------------- right rail (telemetry) ---------------- */
-.rail {
-  overflow: auto; background: var(--surface);
-  border-left: 1px solid var(--border); padding: 18px 18px 28px;
-  display: flex; flex-direction: column; gap: 22px;
-}
 .rail__label { text-transform: uppercase; letter-spacing: 1px; font-size: 11px; color: var(--text-faint); font-weight: 700; margin-bottom: 12px; }
 
 .tiles { display: grid; grid-template-columns: 1fr 1fr; gap: var(--gap); }
@@ -333,24 +353,17 @@ kbd {
 .approve__body { margin: 0; padding: 10px 12px; font-family: var(--mono); font-size: 12px; color: var(--text); white-space: pre-wrap; word-break: break-word; max-height: 300px; overflow: auto; background: var(--bg); }
 .approve__btns { display: flex; justify-content: flex-end; gap: 8px; padding: 10px 12px; }
 
-/* ---------------- agent file-tree sidebar ---------------- */
-.agent { max-width: 1040px; }
-.agent__main { display: flex; gap: 14px; align-items: flex-start; }
-.agent__convo { flex: 1; min-width: 0; }
-.filetree { flex: none; width: 240px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-card); max-height: 62vh; display: flex; flex-direction: column; overflow: hidden; }
-.filetree__hd { display: flex; align-items: center; justify-content: space-between; padding: 8px 12px; border-bottom: 1px solid var(--divider); font-size: 11px; letter-spacing: 1px; text-transform: uppercase; color: var(--text-faint); font-weight: 700; }
-.filetree__refresh { appearance: none; border: 0; background: transparent; color: var(--text-dim); cursor: pointer; font-size: 14px; border-radius: 6px; padding: 0 6px; }
-.filetree__refresh:hover { color: var(--text); background: var(--surface-3); }
-.filetree__list { overflow: auto; padding: 6px 4px; }
-.filetree__empty { color: var(--text-faint); font-size: 12px; padding: 10px 12px; }
+/* ---------------- working-tree list (left rail) ---------------- */
+.agent { max-width: 820px; }
+.filetree__list { display: flex; flex-direction: column; gap: 1px; }
+.filetree__empty { color: var(--text-faint); font-size: 12px; padding: 10px; }
 .ftrow { display: flex; align-items: center; gap: 7px; padding: 4px 8px; border-radius: 6px; font-size: 13px; }
 .ftrow--dir { color: var(--text); font-weight: 500; }
 .ftrow--file { cursor: pointer; color: var(--text-dim); }
 .ftrow--file:hover { background: var(--surface-3); color: var(--text); }
 .ftrow__ic { flex: none; }
 .ftrow__nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.ftprev { margin: 2px 8px 6px 22px; padding: 8px 10px; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; font-family: var(--mono); font-size: 11.5px; color: var(--text-dim); white-space: pre-wrap; max-height: 240px; overflow: auto; }
-@media (max-width: 820px) { .agent__main { flex-direction: column; } .filetree { width: 100%; max-height: 240px; } }
+.ftprev { margin: 2px 8px 6px 20px; padding: 8px 10px; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; font-family: var(--mono); font-size: 11.5px; color: var(--text-dim); white-space: pre-wrap; max-height: 240px; overflow: auto; }
 
 /* ---------------- live write preview (agent) ---------------- */
 .wprev { align-self: flex-start; max-width: 94%; margin: 2px 0; border: 1px solid var(--border); border-radius: var(--r-tile); overflow: hidden; background: var(--surface-2); }
@@ -371,9 +384,13 @@ kbd {
 
 /* ---------------- responsive ---------------- */
 @media (max-width: 1100px) {
-  .app { grid-template-columns: 1fr; height: auto; min-height: 100vh; }
-  .rail { border-left: 0; border-top: 1px solid var(--border); }
-  .conversation { min-height: 50vh; }
+  .app { flex-direction: column; height: auto; min-height: 100vh; overflow: visible; }
+  .lrail, .rail { width: auto !important; max-height: 40vh; border: 0; }
+  .lrail { border-bottom: 1px solid var(--border); }   /* working tree squishes to the top */
+  .rail  { border-top: 1px solid var(--border); }        /* telemetry squishes to the bottom */
+  .main { min-height: 58vh; }
+  .lrail.is-collapsed, .rail.is-collapsed { max-height: none; }
+  .is-collapsed .rail__hd { justify-content: flex-start; padding: 12px 16px; }
 }
 
 @media (prefers-reduced-motion: reduce) {
