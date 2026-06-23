@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>DS4 · DeepSeek V4 Flash</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="app">
+    <!-- ===================== MAIN ===================== -->
+    <main class="main">
+      <header class="topbar">
+        <div class="brand">
+          <div class="brand__badge">DS</div>
+          <div class="brand__meta">
+            <div class="brand__title">DeepSeek V4 Flash</div>
+            <div class="brand__sub" id="brandSub">q2-imatrix · RTX 3090 · CUDA · SSD-streaming</div>
+          </div>
+        </div>
+
+        <div class="topbar__right">
+          <div class="segmented" id="modeToggle">
+            <span class="segmented__thumb"></span>
+            <button class="segmented__btn is-active" data-mode="chat">Chat</button>
+            <button class="segmented__btn" data-mode="agent">Agent</button>
+          </div>
+          <div class="status" id="serverStatus" data-state="online">
+            <span class="status__dot"></span>
+            <span class="status__label">ds4-server online</span>
+          </div>
+        </div>
+      </header>
+
+      <section class="conversation">
+        <!-- Empty state (Chat) -->
+        <div class="empty" id="emptyState">
+          <h1 class="empty__title">Start a conversation</h1>
+          <p class="empty__sub">Streaming from ds4-server on <b>localhost:8080</b> · thinking traces shown above each reply</p>
+          <div class="cards" id="suggestionCards"></div>
+        </div>
+
+        <!-- Agent mode: display-only tool-call preview -->
+        <div class="agent-preview" id="agentPreview" hidden>
+          <div class="agent-note">
+            <span class="agent-note__icon">🛠️</span>
+            <div><b>Agent mode — preview only.</b> Tool calls are shown to capture intent; they are
+              <b>not executed yet</b>. Planned: wire these to a sandboxed tool executor in the metrics
+              sidecar. See <code>frontend_specs.md</code> §10.</div>
+          </div>
+          <div class="turn">
+            <div class="msg msg--user">Refactor <code>ds4_ssd.c</code> to add a bounds check on the read path.</div>
+            <details class="think" open>
+              <summary>Thinking</summary>
+              <div>Read the streaming read path, find the unchecked <code>read()</code>, then propose an edit that clamps the length to the buffer capacity.</div>
+            </details>
+            <div class="toolcall">
+              <div class="toolcall__head"><span class="toolcall__icon">⚙</span> read_file <span class="toolcall__badge">preview</span></div>
+              <pre class="toolcall__args">{ "path": "ds4_ssd.c", "lines": "1-60" }</pre>
+            </div>
+            <div class="toolcall">
+              <div class="toolcall__head"><span class="toolcall__icon">⚙</span> edit_file <span class="toolcall__badge">preview</span></div>
+              <pre class="toolcall__args">{ "path": "ds4_ssd.c",
+  "find":    "n = read(fd, buf, len);",
+  "replace": "if (len > cap) len = cap;\n    n = read(fd, buf, len);" }</pre>
+            </div>
+          </div>
+        </div>
+        <div class="messages" id="messages"></div>
+      </section>
+
+      <footer class="composer">
+        <div class="composer__opts">
+          <button class="chip is-on" id="thinkToggle" title="Toggle thinking mode">Thinking</button>
+        </div>
+        <div class="composer__box">
+          <textarea id="input" class="composer__input" rows="1"
+            placeholder="Message DS4… (Enter to send, Shift+Enter for newline)"></textarea>
+          <div class="composer__actions">
+            <button class="btn btn--ghost" id="clearBtn">Clear</button>
+            <button class="btn btn--primary" id="sendBtn">Send</button>
+          </div>
+        </div>
+        <div class="composer__hint"><kbd>Enter</kbd> to send · <kbd>Shift</kbd>+<kbd>Enter</kbd> for a newline</div>
+      </footer>
+    </main>
+
+    <!-- ===================== TELEMETRY RAIL ===================== -->
+    <aside class="rail">
+      <section>
+        <div class="rail__label">This turn</div>
+        <div class="tiles">
+          <div class="tile"><div class="tile__k">TTFT</div><div class="tile__v is-empty" id="mTtft">—</div></div>
+          <div class="tile"><div class="tile__k">Total</div><div class="tile__v is-empty" id="mTotal">—</div></div>
+          <div class="tile"><div class="tile__k">Prefill</div><div class="tile__v is-empty" id="mPrefill">—</div></div>
+          <div class="tile"><div class="tile__k">Decode</div><div class="tile__v is-empty" id="mDecode">—</div></div>
+          <div class="tile"><div class="tile__k">Prompt tokens</div><div class="tile__v is-empty" id="mPrompt">—</div></div>
+          <div class="tile"><div class="tile__k">Output tokens</div><div class="tile__v is-empty" id="mOutput">—</div></div>
+        </div>
+      </section>
+
+      <section>
+        <div class="rail__label" id="gpuLabel">GPU · NVIDIA RTX 3090</div>
+        <div class="util">
+          <div class="util__head"><span>Utilization</span><span class="util__pct" id="gpuUtil">—</span></div>
+          <canvas class="util__spark" id="utilSpark"></canvas>
+          <div class="util__foot"><span>util · last 60 s</span><span id="gpuPeak">peak —</span></div>
+        </div>
+        <div class="tiles">
+          <div class="tile"><div class="tile__k">Temp</div><div class="tile__v" id="gpuTemp">—</div></div>
+          <div class="tile"><div class="tile__k">Power</div><div class="tile__v" id="gpuPower">—</div></div>
+          <div class="tile"><div class="tile__k">SM clock</div><div class="tile__v" id="gpuClock">—</div></div>
+          <div class="tile"><div class="tile__k">Sample</div><div class="tile__v" id="sampleHz">—</div></div>
+        </div>
+      </section>
+
+      <section>
+        <div class="rail__label">Memory</div>
+        <div class="bar">
+          <div class="bar__head"><span>VRAM</span><span id="vramTxt">—</span></div>
+          <div class="bar__track"><div class="bar__fill bar__fill--accent" id="vramFill" style="width:0%"></div></div>
+        </div>
+        <div class="bar">
+          <div class="bar__head"><span>System RAM</span><span id="ramTxt">—</span></div>
+          <div class="bar__track"><div class="bar__fill bar__fill--warn" id="ramFill" style="width:0%"></div></div>
+          <div class="bar__note" id="ramNote"><span class="ok">●</span> model warm: —</div>
+          <div class="bar__note" id="diskNote">expert stream (disk): —</div>
+        </div>
+      </section>
+
+      <details class="backend" id="backend">
+        <summary>Backend</summary>
+        <div class="backend__body">
+          <dl id="backendDl"></dl>
+        </div>
+      </details>
+    </aside>
+  </div>
+
+  <div class="toast" id="toast"></div>
+
+  <script src="config.js" defer></script>
+  <script src="app.js" defer></script>
+</body>
+</html>
