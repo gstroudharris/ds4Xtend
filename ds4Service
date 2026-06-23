@@ -14,8 +14,9 @@
 #
 # Ports/context overridable via env: DS4_SERVER_PORT DS4_SIDE_PORT DS4_WEB_PORT DS4_CTX
 # Skip model warming with DS4_NO_WARM=1.  Re-run setup (change the dir, future options): --setup
-# Browser: auto-opens the dashboard unless a tab is already open. DS4_NO_BROWSER=1 disables;
-# DS4_OPENER=<cmd> sets the opener (default: xdg-open).
+# Browser: opens the dashboard in a window it OWNS (Chrome/Chromium --app, else a separate
+# Firefox instance) so Ctrl+C closes just the dashboard, not your other tabs. DS4_NO_BROWSER=1
+# disables; DS4_BROWSER="<cmd>" overrides the launch command (the URL is appended).
 set -uo pipefail
 
 # ---------- locations ----------
@@ -80,9 +81,9 @@ wait_http() {  # url timeout_s
 }
 port_in_use() { ss -ltn 2>/dev/null | grep -q ":$1 "; }
 
-# Open the dashboard in a browser unless one already appears open. An open tab polls the
-# sidecar's /metrics ~2x/s, so a rising hit count means a dashboard is already up (works on
-# Wayland and X11 alike). DS4_NO_BROWSER=1 disables; DS4_OPENER overrides the opener.
+# Open the dashboard unless one already appears open (an open tab polls /metrics ~2x/s, so a
+# rising hit count means one is up — works on Wayland and X11). We launch it in a window we own
+# (Chrome --app, else a separate Firefox instance) so teardown can close just the dashboard.
 open_dashboard() {
   local url="http://localhost:$WEB_PORT"
   if [ "${DS4_NO_BROWSER:-0}" = "1" ]; then ok "browser auto-open off (DS4_NO_BROWSER=1) — visit $url"; return; fi
@@ -93,8 +94,37 @@ open_dashboard() {
   sleep 1.3
   h1=$(curl -s "http://127.0.0.1:$SIDE_PORT/healthz" 2>/dev/null | python3 -c "$hits" 2>/dev/null); h1=${h1:-0}
   if [ "$h1" -gt "$h0" ]; then ok "dashboard already open (polling detected) — leaving your tab as-is"; return; fi
-  ok "opening dashboard → $url"
-  ( "${DS4_OPENER:-xdg-open}" "$url" >/dev/null 2>&1 & ) 2>/dev/null
+  # Launch a window we OWN so Ctrl+C can close just the dashboard (registered for teardown).
+  local -a cmd=()
+  if [ -n "${DS4_BROWSER:-}" ]; then
+    cmd=(${DS4_BROWSER} "$url")
+  else
+    local c b=""
+    for c in google-chrome google-chrome-stable chromium chromium-browser brave-browser; do
+      command -v "$c" >/dev/null 2>&1 && { b="$c"; break; }
+    done
+    if [ -n "$b" ]; then
+      cmd=("$b" "--app=$url" "--user-data-dir=$RUN_DIR/browser" --no-first-run --no-default-browser-check)
+    elif command -v firefox >/dev/null 2>&1; then
+      local prof="$RUN_DIR/ffprofile"
+      mkdir -p "$prof"                       # GUI Firefox errors if the --profile dir is missing
+      cat > "$prof/user.js" <<'PREFS'
+user_pref("browser.aboutwelcome.enabled", false);
+user_pref("browser.startup.homepage_override.mstone", "ignore");
+user_pref("browser.shell.checkDefaultBrowser", false);
+user_pref("datareporting.policy.dataSubmissionEnabled", false);
+PREFS
+      cmd=(firefox --no-remote --profile "$prof" --new-window "$url")
+    fi
+  fi
+  if [ "${#cmd[@]}" -eq 0 ]; then
+    ( "${DS4_OPENER:-xdg-open}" "$url" >/dev/null 2>&1 & )
+    warn "opened a tab via xdg-open — can't auto-close it on Ctrl+C"
+    return
+  fi
+  "${cmd[@]}" >/dev/null 2>&1 &
+  register "dashboard window" "$!"
+  ok "opening dashboard in its own window (closes on Ctrl+C) → $url"
 }
 
 verify_dir() {  # candidate -> sets DS4_DIR, MODEL
