@@ -16,7 +16,18 @@ it talks to ds4-server over HTTP, with no source dependency on ds4. See
 
 **Remaining (P2 stretch):** Agent-mode tool *execution*, endpoint switcher, light theme.
 
-## Run (three processes)
+## Run
+
+**One command** (from the repo root):
+
+```bash
+./ds4Service      # prompts for the ds4 dir (remembered), launches everything, Ctrl+C stops it all
+```
+
+`ds4Service` starts ds4-server + the metrics sidecar + the web UI, streams their logs, and tears
+everything down by name on Ctrl+C. Then open http://localhost:8090.
+
+**Manual** (three processes) if you prefer:
 
 ```bash
 # 1) ds4-server — in the ds4 checkout (CORS + port 8080, RAM-optimized)
@@ -24,21 +35,17 @@ cd /home/grant/Dev/ds4
 DS4_CUDA_NO_DIRECT_IO=1 DS4_CUDA_KEEP_MODEL_PAGES=1 LD_LIBRARY_PATH=/usr/local/cuda/lib64 \
   ./ds4-server --cuda --ssd-streaming --ctx 100000 --cors --port 8080
 
-# 2 + 3) sidecar (:8081) + static frontend (:8090), from THIS repo
-./run-frontend.sh          # → open http://localhost:8090
+# 2 + 3) sidecar (:8081) + static frontend (:8090)
+code/run-frontend.sh
 ```
 
-`run-frontend.sh` points the sidecar at `/home/grant/Dev/ds4/ds4flash.gguf` for the "model warm"
-gauge; override with `DS4_MODEL=/path/to/model.gguf ./run-frontend.sh`.
+The "model warm" gauge defaults to `/home/grant/Dev/ds4/ds4flash.gguf`; override with
+`DS4_MODEL=/path/to/model.gguf`.
 
-Static-only preview (no telemetry/chat): `python3 -m http.server 8090`, or `xdg-open index.html`.
-
-## Config
-Server/sidecar URLs and the prompt cards live in `config.js`.
-
-## Files
-- `index.html` · `styles.css` · `app.js` — the SPA (markup / COSMIC theme / chat + telemetry logic)
-- `config.js` — server & sidecar URLs, suggestion cards
-- `metrics_sidecar.py` — GPU/RAM/disk/model-residency JSON on :8081
-- `run-frontend.sh` — launches the sidecar + static server
-- `frontend_specs.md` — full specification & roadmap
+## Layout / what each file does
+- `ds4Service` — one-command launcher for the whole stack (repo root)
+- `code/index.html` · `styles.css` · `app.js` — the SPA (markup / COSMIC theme / chat + telemetry)
+- `code/config.js` — server & sidecar URLs, suggestion cards
+- `code/metrics_sidecar.py` — GPU/RAM/disk/model-residency JSON on :8081
+- `code/run-frontend.sh` — sidecar + static server (not ds4-server)
+- `docs/frontend_specs.md` — full specification & roadmap

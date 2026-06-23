@@ -16,8 +16,9 @@ set -uo pipefail
 
 # ---------- locations ----------
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-FRONTEND_DIR="$SCRIPT_DIR"                       # this repo: index.html, metrics_sidecar.py, ...
-SIDECAR="$FRONTEND_DIR/metrics_sidecar.py"
+FRONTEND_DIR="$SCRIPT_DIR"                       # repo root (holds ds4Service, docs/, code/)
+CODE_DIR="$FRONTEND_DIR/code"                    # web assets + sidecar live here
+SIDECAR="$CODE_DIR/metrics_sidecar.py"
 CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/ds4service"
 CONFIG_FILE="$CONFIG_DIR/dir"
 RUN_DIR="$(mktemp -d "${TMPDIR:-/tmp}/ds4service.XXXXXX")"
@@ -137,7 +138,7 @@ register "metrics-sidecar" "$!"
 printf '    sidecar '; wait_http "http://127.0.0.1:$SIDE_PORT/healthz" 10 && { printf '\n'; ok "sidecar online (model gauge → $(basename "$MODEL"))"; } || { printf '\n'; warn "sidecar slow/own port busy"; }
 
 WEB_LOG="$RUN_DIR/frontend.log"
-( cd "$FRONTEND_DIR" && exec python3 -m http.server "$WEB_PORT" ) > "$WEB_LOG" 2>&1 &
+( cd "$CODE_DIR" && exec python3 -m http.server "$WEB_PORT" ) > "$WEB_LOG" 2>&1 &
 register "ds4Frontend (web)" "$!"
 printf '    frontend '; wait_http "http://127.0.0.1:$WEB_PORT/index.html" 10 && { printf '\n'; ok "frontend online"; } || { printf '\n'; warn "frontend slow/own port busy"; }
 
