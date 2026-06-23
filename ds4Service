@@ -1,0 +1,152 @@
+#!/usr/bin/env bash
+# ds4Service — one-command launcher for the whole DS4 stack:
+#   ds4-server (inference, :8080)  +  metrics sidecar (:8081)  +  ds4Frontend web UI (:8090)
+#
+# What it does:
+#   1. Asks for (and remembers) the ds4 install directory, verifying it's a real build.
+#   2. "Installs" / readies the metrics sidecar (it ships next to this script).
+#   3. Launches ds4-server (RAM-optimized) and waits until it's online.
+#   4. Starts the sidecar + the static frontend server.
+#   5. Streams ds4 + frontend debug output live.
+#   6. On Ctrl+C, stops everything it started, announcing each one.
+#
+# Ports/context overridable via env: DS4_SERVER_PORT DS4_SIDE_PORT DS4_WEB_PORT DS4_CTX
+# Skip model warming with DS4_NO_WARM=1.  Re-prompt for the dir with: ds4Service --reconfigure
+set -uo pipefail
+
+# ---------- locations ----------
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+FRONTEND_DIR="$SCRIPT_DIR"                       # this repo: index.html, metrics_sidecar.py, ...
+SIDECAR="$FRONTEND_DIR/metrics_sidecar.py"
+CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/ds4service"
+CONFIG_FILE="$CONFIG_DIR/dir"
+RUN_DIR="$(mktemp -d "${TMPDIR:-/tmp}/ds4service.XXXXXX")"
+
+SERVER_PORT="${DS4_SERVER_PORT:-8080}"
+SIDE_PORT="${DS4_SIDE_PORT:-8081}"
+WEB_PORT="${DS4_WEB_PORT:-8090}"
+SERVER_CTX="${DS4_CTX:-100000}"
+
+# ---------- pretty output ----------
+if [ -t 1 ]; then
+  B=$'\033[1m'; DIM=$'\033[2m'; GRN=$'\033[32m'; YEL=$'\033[33m'; RED=$'\033[31m'; CYN=$'\033[36m'; RST=$'\033[0m'
+else B=""; DIM=""; GRN=""; YEL=""; RED=""; CYN=""; RST=""; fi
+say()  { printf '%s==>%s %s\n' "$B$CYN" "$RST" "$*"; }
+ok()   { printf '    %s✓%s %s\n' "$GRN" "$RST" "$*"; }
+warn() { printf '    %s!%s %s\n' "$YEL" "$RST" "$*"; }
+errln(){ printf '    %s✗%s %s\n' "$RED" "$RST" "$*" >&2; }
+
+# ---------- service registry + teardown ----------
+declare -a SVC_NAMES=() SVC_PIDS=()
+register() { SVC_NAMES+=("$1"); SVC_PIDS+=("$2"); }
+TAIL_PID=""
+
+cleanup() {
+  trap '' INT TERM                      # ignore repeat Ctrl+C during shutdown
+  [ -n "$TAIL_PID" ] && kill "$TAIL_PID" 2>/dev/null
+  printf '\n%sCtrl+C — shutting down ds4Service. Stopping services:%s\n' "$B$YEL" "$RST"
+  local i name pid
+  for ((i=${#SVC_PIDS[@]}-1; i>=0; i--)); do      # reverse order (frontend → server)
+    name="${SVC_NAMES[$i]}"; pid="${SVC_PIDS[$i]}"
+    if kill -0 "$pid" 2>/dev/null; then
+      printf '  %s•%s stopping %-22s (pid %s)\n' "$CYN" "$RST" "$name" "$pid"
+      kill "$pid" 2>/dev/null
+    else
+      printf '  %s•%s %-22s already stopped\n' "$DIM" "$RST" "$name"
+    fi
+  done
+  sleep 1
+  for pid in ${SVC_PIDS[@]+"${SVC_PIDS[@]}"}; do kill -9 "$pid" 2>/dev/null; done  # force stragglers
+  wait 2>/dev/null
+  rm -rf "$RUN_DIR" 2>/dev/null
+  printf '%sAll ds4 services stopped.%s\n' "$GRN" "$RST"
+  exit 0
+}
+trap cleanup INT TERM
+
+# ---------- helpers ----------
+wait_http() {  # url timeout_s
+  local url="$1" t="$2" i=0
+  while [ "$i" -lt "$t" ]; do
+    [ "$(curl -s -o /dev/null -w '%{http_code}' "$url" 2>/dev/null)" = "200" ] && return 0
+    sleep 1; i=$((i+1)); printf '.'
+  done
+  return 1
+}
+port_in_use() { ss -ltn 2>/dev/null | grep -q ":$1 "; }
+
+verify_dir() {  # candidate -> sets DS4_DIR, MODEL
+  local d="${1/#\~/$HOME}"
+  [ -n "$d" ] && [ -d "$d" ]            || { errln "not a directory: ${1:-<empty>}"; return 1; }
+  [ -x "$d/ds4-server" ]                || { errln "no ds4-server binary in $d  (build: make cuda-generic)"; return 1; }
+  [ -e "$d/ds4flash.gguf" ]             || { errln "no ds4flash.gguf in $d  (run ./download_model.sh)"; return 1; }
+  DS4_DIR="$(cd "$d" && pwd)"; MODEL="$DS4_DIR/ds4flash.gguf"; return 0
+}
+
+# ======================================================================
+printf '%s%sds4Service%s  —  DS4 inference + web UI launcher\n\n' "$B" "$CYN" "$RST"
+
+# ---------- 1. ds4 install directory ----------
+say "1. ds4 install directory"
+saved=""; [ -f "$CONFIG_FILE" ] && saved="$(cat "$CONFIG_FILE" 2>/dev/null)"
+[ "${1:-}" = "--reconfigure" ] && saved=""
+default="${saved:-/home/grant/Dev/ds4}"
+while :; do
+  read -r -p "    Path to ds4 install [$default]: " ans || { echo; exit 1; }
+  ans="${ans:-$default}"
+  if verify_dir "$ans"; then
+    ok "verified: $DS4_DIR"
+    mkdir -p "$CONFIG_DIR"; printf '%s\n' "$DS4_DIR" > "$CONFIG_FILE"
+    ok "saved to $CONFIG_FILE"
+    break
+  fi
+  default="$ans"
+done
+
+# ---------- 2. metrics sidecar ----------
+say "2. metrics sidecar"
+[ -f "$SIDECAR" ] || { errln "metrics_sidecar.py not found beside ds4Service ($SIDECAR)"; exit 1; }
+chmod +x "$SIDECAR" 2>/dev/null || true
+ok "ready: $SIDECAR"
+
+# ---------- 3. launch ds4-server ----------
+say "3. launching ds4-server (:$SERVER_PORT, ctx $SERVER_CTX)"
+if port_in_use "$SERVER_PORT"; then errln "port $SERVER_PORT already in use — is ds4-server already running?"; exit 1; fi
+if [ "${DS4_NO_WARM:-0}" != "1" ]; then
+  ( cat "$MODEL" >/dev/null 2>&1 ) & register "model-warm (cat)" "$!"
+  ok "warming model into RAM page cache (background)"
+fi
+SERVER_LOG="$RUN_DIR/ds4-server.log"
+( cd "$DS4_DIR" && DS4_CUDA_NO_DIRECT_IO=1 DS4_CUDA_KEEP_MODEL_PAGES=1 \
+    LD_LIBRARY_PATH="/usr/local/cuda/lib64:${LD_LIBRARY_PATH:-}" \
+    exec ./ds4-server --cuda --ssd-streaming --ctx "$SERVER_CTX" --cors --port "$SERVER_PORT" \
+  ) > "$SERVER_LOG" 2>&1 &
+register "ds4-server" "$!"
+printf '    waiting for model load '
+if wait_http "http://127.0.0.1:$SERVER_PORT/v1/models" 180; then
+  printf '\n'; ok "ds4-server online"
+else
+  printf '\n'; errln "ds4-server did not come up — last log lines:"; tail -n 18 "$SERVER_LOG" >&2; cleanup
+fi
+
+# ---------- 4. sidecar + frontend ----------
+say "4. starting sidecar (:$SIDE_PORT) and ds4Frontend (:$WEB_PORT)"
+SIDE_LOG="$RUN_DIR/sidecar.log"
+( exec python3 "$SIDECAR" --port "$SIDE_PORT" --model "$MODEL" ) > "$SIDE_LOG" 2>&1 &
+register "metrics-sidecar" "$!"
+printf '    sidecar '; wait_http "http://127.0.0.1:$SIDE_PORT/healthz" 10 && { printf '\n'; ok "sidecar online (model gauge → $(basename "$MODEL"))"; } || { printf '\n'; warn "sidecar slow/own port busy"; }
+
+WEB_LOG="$RUN_DIR/frontend.log"
+( cd "$FRONTEND_DIR" && exec python3 -m http.server "$WEB_PORT" ) > "$WEB_LOG" 2>&1 &
+register "ds4Frontend (web)" "$!"
+printf '    frontend '; wait_http "http://127.0.0.1:$WEB_PORT/index.html" 10 && { printf '\n'; ok "frontend online"; } || { printf '\n'; warn "frontend slow/own port busy"; }
+
+# ---------- 5. stream logs ----------
+say "5. up and running"
+printf '    %sOpen:%s  %shttp://localhost:%s%s\n' "$B" "$RST" "$CYN" "$WEB_PORT" "$RST"
+printf '    Live logs below (%s[ds4-server.log]%s / %s[sidecar.log]%s / %s[frontend.log]%s).  %sPress Ctrl+C to stop everything.%s\n\n' \
+  "$CYN" "$RST" "$DIM" "$RST" "$GRN" "$RST" "$B" "$RST"
+tail -n +1 -F "$SERVER_LOG" "$SIDE_LOG" "$WEB_LOG" & TAIL_PID=$!
+wait "$TAIL_PID"
+# tail ended on its own (a server died?) — tear down too.
+cleanup
