@@ -99,8 +99,15 @@
           <textarea id="input" class="composer__input" rows="1"
             placeholder="Message DS4… (Enter to send, Shift+Enter for newline)"></textarea>
           <div class="composer__actions">
-            <button class="btn btn--ghost" id="clearBtn">Clear</button>
-            <button class="btn btn--primary" id="sendBtn">Send</button>
+            <div class="composer__btns">
+              <button class="btn btn--ghost" id="clearBtn">Clear</button>
+              <button class="btn btn--primary" id="sendBtn">Send</button>
+            </div>
+            <div class="seg2" id="sendLoopToggle" title="Send: run once · Loop: re-run this prompt until you press Stop">
+              <span class="seg2__thumb"></span>
+              <button class="seg2__btn is-active" data-sl="send">Send</button>
+              <button class="seg2__btn" data-sl="loop">Loop</button>
+            </div>
           </div>
         </div>
         <div class="composer__hint"><kbd>Enter</kbd> to send · <kbd>Shift</kbd>+<kbd>Enter</kbd> for a newline</div>

@@ -204,7 +204,12 @@ kbd {
   color: var(--text); font: inherit; max-height: 200px; padding: 6px 4px;
 }
 .composer__input::placeholder { color: var(--text-faint); }
-.composer__actions { display: flex; gap: 8px; }
+.composer__actions { display: flex; flex-direction: column; align-items: flex-end; gap: 8px; }
+.composer__btns { display: flex; gap: 8px; }
+.composer__input:disabled { opacity: .5; cursor: not-allowed; }
+.composer.is-locked #clearBtn,
+.composer.is-locked #sendLoopToggle,
+.composer.is-locked .composer__opts { opacity: .45; pointer-events: none; }   /* everything but Stop is locked while looping */
 .composer__hint { text-align: center; color: var(--text-faint); font-size: 12px; margin-top: 10px; }
 
 .btn { appearance: none; font: inherit; font-weight: 600; cursor: pointer; border-radius: var(--r-btn); padding: 9px 18px; border: 1px solid transparent; transition: background .15s ease, border-color .15s ease, opacity .15s ease; }
@@ -303,6 +308,8 @@ kbd {
 .btn:disabled { opacity: .5; cursor: not-allowed; }
 .btn--stop { background: var(--danger); color: #fff; }
 .btn--stop:hover { background: #f58383; }
+.btn--loop { background: var(--warn); color: var(--on-accent); }   /* same orange as the Auto toggle */
+.btn--loop:hover { background: #F2B173; }
 
 /* ---------------- agent mode ---------------- */
 .agent { max-width: 820px; margin: 0 auto; display: flex; flex-direction: column; gap: 14px; }
@@ -318,6 +325,7 @@ kbd {
 .seg2 { position: relative; display: inline-flex; padding: 3px; background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--r-pill); }
 .seg2__thumb { position: absolute; top: 3px; left: 3px; height: calc(100% - 6px); width: calc(50% - 3px); border-radius: var(--r-pill); background: var(--accent); transition: transform .18s ease; }
 .seg2.is-auto .seg2__thumb { transform: translateX(100%); background: var(--warn); }
+.seg2.is-loop .seg2__thumb { transform: translateX(100%); background: var(--warn); }   /* Loop = same orange as Auto */
 .seg2__btn { position: relative; z-index: 1; appearance: none; border: 0; background: transparent; color: var(--text-dim); font: inherit; font-weight: 600; font-size: 12px; padding: 4px 14px; border-radius: var(--r-pill); cursor: pointer; }
 .seg2__btn.is-active { color: var(--on-accent); }
 

@@ -66,6 +66,7 @@
 
   /* ---------------- composer ---------------- */
   const input = $("input");
+  const composerEl = document.querySelector(".composer");
   let thinkingOn = true;
   $("thinkToggle").addEventListener("click", (e) => {
     thinkingOn = !thinkingOn;
@@ -73,8 +74,8 @@
     e.target.classList.toggle("is-on", thinkingOn);
   });
   input.addEventListener("input", () => autosize(input));
-  input.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } });
-  $("sendBtn").addEventListener("click", () => { if (streaming) return stop(); if (agentBusy) return stopAgent(); send(); });
+  input.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); if (streaming || agentBusy || looping) return; if (loopMode) startLoop(); else send(); } });
+  $("sendBtn").addEventListener("click", () => { if (streaming || agentBusy || looping) return stopLoop(); if (loopMode) return startLoop(); send(); });
   $("clearBtn").addEventListener("click", () => {
     if (mode === "agent") {                       // Clear only the active mode's conversation
       if (agentBusy) stopAgent();
@@ -90,6 +91,7 @@
   /* ---------------- chat ---------------- */
   let messages = [];          // API history [{role, content}]
   let streaming = false;
+  let loopMode = false, looping = false, loopPrompt = "", loopErrored = false;   // Send/Loop toggle
   let abortCtrl = null;
 
   let stick = true;
@@ -158,10 +160,7 @@
     if (mode === "agent") { if (agentBusy) return; input.value = ""; autosize(input); return runAgent(text); }
     if (streaming) return;
     input.value = ""; autosize(input);
-    appendUser(text);
-    messages.push({ role: "user", content: text });
-    updateView();
-    await runStream();
+    await chatOnce(text);
   }
   function stop() { if (abortCtrl) abortCtrl.abort(); }
 
@@ -222,7 +221,7 @@
       }
     } catch (e) {
       if (e.name === "AbortError") { ui.finalize(content || "_(stopped)_"); finalizeTurnMetrics({ t0, tFirst, tEnd: performance.now(), usage, outTokEst, estPrompt }); }
-      else ui.error(String(e.message || e));
+      else { ui.error(String(e.message || e)); loopErrored = true; }
     } finally {
       clearInterval(liveTimer);
       streaming = false; setSendStop(false); abortCtrl = null;
@@ -230,12 +229,55 @@
     }
   }
 
-  function setSendStop(s) {
+  function setSendStop() {                 // reflects Send / Loop / Stop + locks the composer while looping
     const b = $("sendBtn");
-    b.textContent = s ? "Stop" : "Send";
-    b.classList.toggle("btn--stop", s);
-    b.classList.toggle("btn--primary", !s);
+    const running = streaming || agentBusy || looping;
+    b.textContent = running ? "Stop" : (loopMode ? "Loop" : "Send");
+    b.classList.toggle("btn--stop", running);
+    b.classList.toggle("btn--loop", !running && loopMode);
+    b.classList.toggle("btn--primary", !running && !loopMode);
+    input.disabled = looping;
+    composerEl.classList.toggle("is-locked", looping);
+    toggle.style.pointerEvents = looping ? "none" : "";   // can't switch Chat/Agent mid-loop
+    toggle.style.opacity = looping ? "0.5" : "";
   }
+
+  /* ---------------- Send / Loop toggle + loop driver ---------------- */
+  const slToggle = $("sendLoopToggle");
+  try { loopMode = localStorage.getItem("ds4:loop") === "1"; } catch (e) {}
+  function reflectSL() {
+    slToggle.classList.toggle("is-loop", loopMode);
+    slToggle.querySelectorAll(".seg2__btn").forEach((x) => x.classList.toggle("is-active", (x.dataset.sl === "loop") === loopMode));
+    setSendStop();
+  }
+  slToggle.querySelectorAll(".seg2__btn").forEach((b) => b.addEventListener("click", () => {
+    if (looping) return;                   // can't switch mode mid-loop
+    loopMode = b.dataset.sl === "loop";
+    try { localStorage.setItem("ds4:loop", loopMode ? "1" : "0"); } catch (e) {}
+    reflectSL();
+  }));
+  function stopLoop() { looping = false; if (abortCtrl) abortCtrl.abort(); if (agentAbort) agentAbort.abort(); }
+  async function chatOnce(text) { appendUser(text); messages.push({ role: "user", content: text }); updateView(); await runStream(); }
+  async function startLoop() {
+    const text = input.value.trim();
+    if (!text || streaming || agentBusy || looping) return;
+    const loopAgent = mode === "agent";    // lock the loop to the mode it started in
+    if (loopAgent && !workspace) { $("agentPick").click(); toast("Lock a folder first, then start the loop."); return; }
+    loopPrompt = text;
+    looping = true; setSendStop();
+    try {
+      while (looping) {
+        loopErrored = false;
+        if (loopAgent) await runAgent(loopPrompt); else await chatOnce(loopPrompt);
+        if (!looping) break;               // user pressed Stop
+        if (loopErrored) { toast("Loop stopped — the last run errored."); break; }
+        await new Promise((r) => setTimeout(r, 350));   // brief breath between iterations
+      }
+    } finally {
+      looping = false; setSendStop();
+    }
+  }
+  reflectSL();
 
   /* ---------------- per-turn metrics (live while streaming → exact at end) ---------------- */
   const TURN_IDS = ["mTtft", "mTotal", "mPrefill", "mDecode", "mPrompt", "mOutput"];
@@ -694,7 +736,7 @@
         }
       }
     } catch (e) {
-      if (e.name !== "AbortError") agError(String(e.message || e));
+      if (e.name !== "AbortError") { agError(String(e.message || e)); loopErrored = true; }
     } finally {
       agentBusy = false; setSendStop(false); agentAbort = null;
       saveAgent();

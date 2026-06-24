@@ -6,7 +6,8 @@
 #   1. On first run (or with --setup), asks for + remembers the ds4 install directory;
 #      otherwise reuses the saved one. (--setup is where future options will live.)
 #   2. "Installs" / readies the metrics sidecar (it ships next to this script).
-#   3. Launches ds4-server (RAM-optimized) and waits until it's online.
+#   3. Checks the ports it needs; if a stale ds4 process is holding one, offers to close it (Y/n).
+#      Then launches ds4-server (RAM-optimized) and waits until it's online.
 #   4. Starts the sidecar + agent-tools (sandboxed file I/O) + the static frontend, then opens
 #      the dashboard in your browser (only if a dashboard tab isn't already open).
 #   5. Streams ds4 + frontend debug output live.
@@ -85,6 +86,41 @@ wait_http() {  # url timeout_s
   return 1
 }
 port_in_use() { ss -ltn 2>/dev/null | grep -q ":$1 "; }
+
+# If a needed port is busy, show the owner; for our own stale processes, offer to close it (and any others).
+preflight_ports() {  # args: "port:label" ...
+  local spec port pid cmd found foreign=0 i=0 stillup p d ans=""
+  local -a bp_ports=() bp_pids=() bp_desc=()
+  for spec in "$@"; do
+    port="${spec%%:*}"
+    port_in_use "$port" || continue
+    found=0
+    for pid in $(ss -ltnp 2>/dev/null | grep ":$port " | grep -oE 'pid=[0-9]+' | grep -oE '[0-9]+' | sort -u); do
+      found=1
+      cmd=$(ps -o args= -p "$pid" 2>/dev/null | tr -s ' ')
+      bp_ports+=("$port"); bp_pids+=("$pid"); bp_desc+=(":$port  pid $pid  ${cmd:0:82}")
+      case "$cmd" in *ds4-server*|*metrics_sidecar*|*agent_tools*|*http.server*) ;; *) foreign=1 ;; esac
+    done
+    [ "$found" = 0 ] && { bp_desc+=(":$port  in use (owner hidden — needs sudo to see)"); foreign=1; }
+  done
+  [ "${#bp_desc[@]}" -eq 0 ] && return 0
+  warn "needed port(s) already in use:"
+  for d in "${bp_desc[@]}"; do echo "        $d"; done
+  if [ "$foreign" = 1 ]; then
+    errln "one is an unrelated/hidden process — close it yourself, or change ports (DS4_*_PORT)"; return 1
+  fi
+  if [ ! -t 0 ]; then errln "re-run ds4Service in an interactive terminal to be offered to close them"; return 1; fi
+  read -r -p "    Close ${#bp_pids[@]} running ds4 process(es) and continue? [Y/n]: " ans || ans="n"
+  case "${ans:-Y}" in [Nn]*) errln "left them running — cannot continue"; return 1 ;; esac
+  for pid in "${bp_pids[@]}"; do kill "$pid" 2>/dev/null; done       # graceful — ds4-server drains on SIGTERM
+  while [ "$i" -lt 12 ]; do
+    stillup=0; for p in "${bp_ports[@]}"; do port_in_use "$p" && stillup=1; done
+    [ "$stillup" = 0 ] && break; sleep 0.5; i=$((i+1))
+  done
+  if [ "${stillup:-0}" = 1 ]; then warn "still up — forcing"; for pid in "${bp_pids[@]}"; do kill -9 "$pid" 2>/dev/null; done; sleep 0.7; fi
+  for p in "${bp_ports[@]}"; do port_in_use "$p" && { errln "could not free port $p"; return 1; }; done
+  ok "closed ${#bp_pids[@]} process(es) — ports are free"
+}
 
 # Open the dashboard unless one already appears open (an open tab polls /metrics ~2x/s, so a
 # rising hit count means one is up — works on Wayland and X11). We launch it in a window we own
@@ -192,7 +228,7 @@ ok "ready: $SIDECAR"
 
 # ---------- 3. launch ds4-server ----------
 say "3. launching ds4-server (:$SERVER_PORT, ctx $SERVER_CTX)"
-if port_in_use "$SERVER_PORT"; then errln "port $SERVER_PORT already in use — is ds4-server already running?"; exit 1; fi
+preflight_ports "$SERVER_PORT:ds4-server" "$SIDE_PORT:sidecar" "$AGENT_PORT:agent-tools" "$WEB_PORT:frontend" || exit 1
 if [ "${DS4_NO_WARM:-0}" != "1" ]; then
   ( cat "$MODEL" >/dev/null 2>&1 ) & register "model-warm (cat)" "$!"
   ok "warming model into RAM page cache (background)"
