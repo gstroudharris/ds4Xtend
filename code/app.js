@@ -364,20 +364,19 @@
 
   /* ================= Agent mode (sandboxed file tools) ================= */
   const AGENT_SYSTEM =
-    "You are DS4, a coding agent working inside a single locked project folder. Use the provided tools " +
-    "(list_dir, read_file, search, write_file, edit_file, mkdir, delete) to inspect and modify files. " +
-    "All paths are relative to the workspace root (use '.' for the root); you cannot access anything " +
-    "outside the folder. Prefer edit_file for small changes; read or search before editing. When you " +
-    "write a file, provide its full new contents. When the task is done, briefly summarize what you changed.";
+    "You are DS4, a coding agent working inside one locked project folder. Use the provided tools to " +
+    "inspect and modify files. All paths are relative to the workspace root (use '.' for the root); you " +
+    "cannot access anything outside it. Prefer edit_file for small changes; read or search before " +
+    "editing. When writing a file, provide its full new contents. When done, briefly summarize your changes.";
 
   const TOOLS = [
-    { type: "function", function: { name: "list_dir", description: "List files and folders in a directory within the workspace.", parameters: { type: "object", properties: { path: { type: "string", description: "Directory relative to the workspace root; use '.' for the root." } }, required: ["path"] } } },
-    { type: "function", function: { name: "read_file", description: "Read a UTF-8 text file within the workspace.", parameters: { type: "object", properties: { path: { type: "string", description: "File path relative to the workspace root." } }, required: ["path"] } } },
-    { type: "function", function: { name: "search", description: "Search file contents within the workspace for a substring.", parameters: { type: "object", properties: { query: { type: "string" }, path: { type: "string", description: "Optional subdirectory to limit the search." } }, required: ["query"] } } },
-    { type: "function", function: { name: "write_file", description: "Create or overwrite a UTF-8 text file within the workspace with full new contents.", parameters: { type: "object", properties: { path: { type: "string" }, content: { type: "string" } }, required: ["path", "content"] } } },
-    { type: "function", function: { name: "edit_file", description: "Find-and-replace in an existing text file (replaces every occurrence of 'find' with 'replace').", parameters: { type: "object", properties: { path: { type: "string" }, find: { type: "string" }, replace: { type: "string" } }, required: ["path", "find", "replace"] } } },
-    { type: "function", function: { name: "mkdir", description: "Create a directory (and parents) within the workspace.", parameters: { type: "object", properties: { path: { type: "string" } }, required: ["path"] } } },
-    { type: "function", function: { name: "delete", description: "Delete a file, or an empty directory, within the workspace.", parameters: { type: "object", properties: { path: { type: "string" } }, required: ["path"] } } },
+    { type: "function", function: { name: "list_dir", description: "List files and folders in a directory.", parameters: { type: "object", properties: { path: { type: "string" } }, required: ["path"] } } },
+    { type: "function", function: { name: "read_file", description: "Read a text file.", parameters: { type: "object", properties: { path: { type: "string" } }, required: ["path"] } } },
+    { type: "function", function: { name: "search", description: "Search file contents for a substring.", parameters: { type: "object", properties: { query: { type: "string" }, path: { type: "string", description: "Optional subdirectory to limit the search." } }, required: ["query"] } } },
+    { type: "function", function: { name: "write_file", description: "Create or overwrite a text file with full new contents.", parameters: { type: "object", properties: { path: { type: "string" }, content: { type: "string" } }, required: ["path", "content"] } } },
+    { type: "function", function: { name: "edit_file", description: "Find-and-replace in a text file (replaces every occurrence of 'find' with 'replace').", parameters: { type: "object", properties: { path: { type: "string" }, find: { type: "string" }, replace: { type: "string" } }, required: ["path", "find", "replace"] } } },
+    { type: "function", function: { name: "mkdir", description: "Create a directory (and parents).", parameters: { type: "object", properties: { path: { type: "string" } }, required: ["path"] } } },
+    { type: "function", function: { name: "delete", description: "Delete a file or empty directory.", parameters: { type: "object", properties: { path: { type: "string" } }, required: ["path"] } } },
   ];
   const TOOL_EP = { list_dir: "/tools/list_dir", read_file: "/tools/read_file", write_file: "/tools/write_file", search: "/tools/search", edit_file: "/tools/edit_file", mkdir: "/tools/mkdir", delete: "/tools/delete", tree: "/tools/tree" };
 
