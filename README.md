@@ -31,7 +31,7 @@ everything down by name on Ctrl+C. Then open http://localhost:8090.
 
 ```bash
 # 1) ds4-server — in the ds4 checkout (CORS + port 8080, RAM-optimized)
-cd /home/grant/Dev/ds4
+cd ../ds4   # the ds4 checkout (sibling of this repo)
 DS4_CUDA_NO_DIRECT_IO=1 DS4_CUDA_KEEP_MODEL_PAGES=1 LD_LIBRARY_PATH=/usr/local/cuda/lib64 \
   ./ds4-server --cuda --ssd-streaming --ctx 100000 --cors --port 8080
 
@@ -39,7 +39,7 @@ DS4_CUDA_NO_DIRECT_IO=1 DS4_CUDA_KEEP_MODEL_PAGES=1 LD_LIBRARY_PATH=/usr/local/c
 code/run-frontend.sh
 ```
 
-The "model warm" gauge defaults to `/home/grant/Dev/ds4/ds4flash.gguf`; override with
+The "model warm" gauge defaults to the sibling `../ds4/ds4flash.gguf`; override with
 `DS4_MODEL=/path/to/model.gguf`.
 
 ## Layout / what each file does

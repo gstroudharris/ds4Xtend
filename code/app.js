@@ -30,7 +30,7 @@
 
   const toggle = $("modeToggle");
   toggle.querySelectorAll(".segmented__btn").forEach((btn) =>
-    btn.addEventListener("click", () => { mode = btn.dataset.mode; updateView(); }));
+    btn.addEventListener("click", () => { mode = btn.dataset.mode; try { localStorage.setItem("ds4:mode", mode); } catch (e) {} updateView(); if (mode === "agent") syncWorkspace(); }));
   function updateView() {
     const agent = mode === "agent";
     toggle.classList.toggle("is-agent", agent);
@@ -38,15 +38,18 @@
     agentPanel.hidden = !agent;
     $("leftRail").hidden = !agent;            // working-tree rail is agent-only
     $("agentModeToggle").hidden = !agent;     // Ask/Auto is agent-only (now sits next to Thinking)
+    $("sendLoopToggle").hidden = !agent;      // Send/Loop is agent-only too
     messagesEl.hidden = agent;
     emptyState.hidden = agent || messages.length > 0;
     const ae = $("agentEmpty"); if (ae) ae.hidden = agentMsgs.length > 0;
     input.placeholder = agent
       ? (workspace ? "Ask the agent to read or edit files in the folder…" : "Choose a folder for the agent first…")
       : "Message DS4… (Enter to send, Shift+Enter for newline)";
+    setSendStop();   // reflect Send/Loop on mode switch (loop is agent-only)
   }
 
   /* ---------------- collapsible side rails ---------------- */
+  const railResyncs = [];
   function wireRail(railId, btnId, arrows, lsKey) {
     const rail = $(railId), btn = $(btnId);
     if (!rail || !btn) return;
@@ -61,6 +64,7 @@
     render();
     btn.addEventListener("click", () => { collapsed = !collapsed; render(); try { localStorage.setItem(lsKey, collapsed ? "1" : "0"); } catch (e) {} });
     if (mq.addEventListener) mq.addEventListener("change", render); else mq.addListener(render);
+    railResyncs.push(() => { try { collapsed = localStorage.getItem(lsKey) === "1"; } catch (e) {} render(); });   // re-apply after loadState seeds localStorage
   }
   wireRail("leftRail", "leftRailToggle", { hc: "«", he: "»", vc: "▲", ve: "▼" }, "ds4:lrail");
   wireRail("rightRail", "rightRailToggle", { hc: "»", he: "«", vc: "▼", ve: "▲" }, "ds4:rrail");
@@ -75,15 +79,15 @@
     e.target.classList.toggle("is-on", thinkingOn);
   });
   input.addEventListener("input", () => autosize(input));
-  input.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); if (streaming || agentBusy || looping) return; if (loopMode) startLoop(); else send(); } });
-  $("sendBtn").addEventListener("click", () => { if (streaming || agentBusy || looping) return stopLoop(); if (loopMode) return startLoop(); send(); });
+  input.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); if (streaming || agentBusy || looping) return; if (loopMode && mode === "agent") startLoop(); else send(); } });
+  $("sendBtn").addEventListener("click", () => { if (streaming || agentBusy || looping) return stopLoop(); if (loopMode && mode === "agent") return startLoop(); send(); });
   $("clearBtn").addEventListener("click", () => {
     if (mode === "agent") {                       // Clear only the active mode's conversation
       if (agentBusy) stopAgent();
-      agentMsgs = []; agentMessagesEl.innerHTML = ""; saveAgent(); $("agentEmpty").hidden = false;
+      resetLog("agent"); agentMsgs = []; agentMessagesEl.innerHTML = ""; saveAgent(); $("agentEmpty").hidden = false;
     } else {
       if (streaming) stop();
-      messages = []; messagesEl.innerHTML = ""; resetTurnMetrics(); saveChat();
+      resetLog("chat"); messages = []; messagesEl.innerHTML = ""; resetTurnMetrics(); saveChat();
     }
     updateView(); input.focus();
   });
@@ -95,15 +99,16 @@
   let loopMode = false, looping = false, loopPrompt = "", loopErrored = false;   // Send/Loop toggle
   let abortCtrl = null;
 
-  let stick = true;
+  let stick = true, rendering = false;
   const stickToggle = $("stickToggle");
   function reflectStick() { stickToggle.classList.toggle("is-on", stick); stickToggle.textContent = stick ? "↓ Following" : "↓ Follow"; }
-  function scrollDown(force) { if (force || stick) conversationEl.scrollTop = conversationEl.scrollHeight; }
+  function saveStick() { try { localStorage.setItem("ds4:stick", stick ? "1" : "0"); } catch (e) {} }
+  function scrollDown(force) { if (rendering) return; if (force || stick) conversationEl.scrollTop = conversationEl.scrollHeight; }
   conversationEl.addEventListener("scroll", () => {
     const atBottom = conversationEl.scrollHeight - conversationEl.scrollTop - conversationEl.clientHeight < 48;
-    if (atBottom !== stick) { stick = atBottom; reflectStick(); }   // auto on/off as the user scrolls
+    if (atBottom !== stick) { stick = atBottom; reflectStick(); saveStick(); }   // auto on/off as the user scrolls
   });
-  stickToggle.addEventListener("click", () => { stick = !stick; reflectStick(); if (stick) conversationEl.scrollTop = conversationEl.scrollHeight; });
+  stickToggle.addEventListener("click", () => { stick = !stick; reflectStick(); saveStick(); if (stick) conversationEl.scrollTop = conversationEl.scrollHeight; });
   reflectStick();
 
   function appendUser(text) {
@@ -226,17 +231,18 @@
     } finally {
       clearInterval(liveTimer);
       streaming = false; setSendStop(false); abortCtrl = null;
-      saveChat();
+      saveChat(); logFinishTurn("chat");
     }
   }
 
   function setSendStop() {                 // reflects Send / Loop / Stop + locks the composer while looping
     const b = $("sendBtn");
     const running = streaming || agentBusy || looping;
-    b.textContent = running ? "Stop" : (loopMode ? "Loop" : "Send");
+    const loopActive = loopMode && mode === "agent";   // Send/Loop is agent-only
+    b.textContent = running ? "Stop" : (loopActive ? "Loop" : "Send");
     b.classList.toggle("btn--stop", running);
-    b.classList.toggle("btn--loop", !running && loopMode);
-    b.classList.toggle("btn--primary", !running && !loopMode);
+    b.classList.toggle("btn--loop", !running && loopActive);
+    b.classList.toggle("btn--primary", !running && !loopActive);
     input.disabled = looping;
     composerEl.classList.toggle("is-locked", looping);
     toggle.style.pointerEvents = looping ? "none" : "";   // can't switch Chat/Agent mid-loop
@@ -415,16 +421,36 @@
       const r = await fetch(C.agentUrl + "/workspace", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ path }) });
       const d = await r.json();
       if (!r.ok) throw new Error(d.error || "failed");
-      workspace = d.root; agentWs.textContent = d.root; picker.hidden = true;
+      workspace = d.root; agentWs.textContent = d.root; picker.hidden = true; try { localStorage.setItem("ds4:workspace", d.root); } catch (e) {}
       agentEmpty.textContent = "Locked to " + d.root + " — ask the agent to read or edit files here.";
       updateView(); refreshTree();
     } catch (e) { toast("Couldn't lock folder: " + (e.message || e)); }
   }
 
-  // adopt an already-locked workspace (e.g. via --workspace) on load
-  fetch(C.agentUrl + "/healthz").then((r) => r.json()).then((d) => {
-    if (d && d.workspace) { workspace = d.workspace; agentWs.textContent = d.workspace; agentEmpty.textContent = "Locked to " + d.workspace + " — ask the agent to read or edit files here."; refreshTree(); }
-  }).catch(() => { agentWs.textContent = "agent-tools offline (:8082)"; });
+  // Restore the locked folder — AGENT MODE ONLY. Never auto-load a workspace while in Chat (no file access there).
+  function adoptWs(root) {
+    workspace = root; agentWs.textContent = root; picker.hidden = true;
+    agentEmpty.textContent = "Locked to " + root + " — ask the agent to read or edit files here.";
+    refreshTree(); updateView();
+  }
+  async function syncWorkspace() {
+    if (mode !== "agent" || workspace) return;
+    let d = null;
+    try { d = await (await fetch(C.agentUrl + "/healthz")).json(); }
+    catch (e) { agentWs.textContent = "agent-tools offline (:8082)"; return; }
+    if (d && d.workspace) return adoptWs(d.workspace);          // backend already locked (e.g. --workspace)
+    let saved = null; try { saved = localStorage.getItem("ds4:workspace"); } catch (e) {}
+    if (!saved) return;
+    try {
+      const r = await fetch(C.agentUrl + "/workspace", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ path: saved }) });
+      const j = await r.json();
+      if (!r.ok) throw new Error(j.error || "failed");
+      adoptWs(j.root);
+    } catch (e) {
+      try { localStorage.removeItem("ds4:workspace"); } catch (e2) {}   // folder gone — forget it
+      toast("Previously-locked folder is unavailable — choose a new one.");
+    }
+  }
 
   /* ----- file-tree sidebar ----- */
   const treeList = $("fileTreeList");
@@ -745,7 +771,7 @@
       if (e.name !== "AbortError") { agError(String(e.message || e)); loopErrored = true; }
     } finally {
       agentBusy = false; setSendStop(false); agentAbort = null;
-      saveAgent();
+      saveAgent(); logFinishTurn("agent");
     }
   }
 
@@ -817,6 +843,88 @@
   function saveChat() { try { localStorage.setItem(LS.chat, JSON.stringify(messages)); } catch (e) {} }
   function saveAgent() { try { localStorage.setItem(LS.agent, JSON.stringify(agentMsgs)); } catch (e) {} }
 
+  /* ---------------- conversation logging (sidecar → /logs) + in-memory history cap ---------------- */
+  const LOGCFG = C.logging || {};
+  const logOn = LOGCFG.enabled !== false;
+  const maxHistChars = LOGCFG.maxHistoryChars || 4000000;
+  const logState = { chat: { name: null, logged: 0 }, agent: { name: null, logged: 0 } };
+  const NL = String.fromCharCode(10);
+  const pad2 = (n) => String(n).padStart(2, "0");
+  function buildLogName(m) {
+    const d = new Date(), secs = d.getHours() * 3600 + d.getMinutes() * 60 + d.getSeconds();
+    return (m === "agent" ? "Agent" : "Chat") + "_" + pad2(d.getDate()) + "-" + pad2(d.getMonth() + 1) + "-" + String(d.getFullYear()).slice(-2) + "_" + secs + ".md";
+  }
+  function msgsOf(m) { return m === "agent" ? agentMsgs : messages; }
+  function fmtMsgs(arr) {
+    let out = "";
+    for (const m of arr) {
+      if (m.role === "user") out += NL + "### User" + NL + NL + (m.content || "") + NL;
+      else if (m.role === "assistant") {
+        out += NL + "### Assistant" + NL + NL + (m.content || "");
+        if (m.tool_calls) for (const tc of m.tool_calls) out += NL + "- tool: " + tc.function.name + "(" + (tc.function.arguments || "") + ")";
+        out += NL;
+      } else if (m.role === "tool") out += NL + "> tool result: " + String(m.content || "").slice(0, 4000) + NL;
+    }
+    return out;
+  }
+  function saveLogState() { try { localStorage.setItem("ds4:logState", JSON.stringify(logState)); } catch (e) {} }
+  function flushLog(m, beacon) {
+    if (!logOn) return;
+    const arr = msgsOf(m), st = logState[m];
+    if (!st.name) { st.name = buildLogName(m); st.logged = 0; }
+    if (arr.length <= st.logged) return;
+    const first = st.logged === 0;
+    const head = first ? ("# " + (m === "agent" ? "Agent" : "Chat") + " conversation - " + new Date().toLocaleString() + NL) : "";
+    const body = head + fmtMsgs(arr.slice(st.logged));
+    const prev = st.logged;
+    st.logged = arr.length; saveLogState();
+    const payload = JSON.stringify({ name: st.name, content: body, append: !first });
+    if (beacon && navigator.sendBeacon) { try { navigator.sendBeacon(C.sidecarUrl + "/log", new Blob([payload], { type: "text/plain" })); } catch (e) {} }
+    else fetch(C.sidecarUrl + "/log", { method: "POST", headers: { "Content-Type": "application/json" }, body: payload }).then((r) => { if (!r.ok) throw 0; }).catch(() => { st.logged = prev; saveLogState(); });
+  }
+  function capHistory(m) {
+    const arr = msgsOf(m);
+    let chars = 0; for (const x of arr) chars += (x.content || "").length;
+    if (chars <= maxHistChars) return;
+    flushLog(m);                              // persist before dropping the oldest from RAM
+    let drop = 0;
+    while (arr.length - drop > 2 && chars > maxHistChars) { chars -= (arr[drop].content || "").length; drop++; }
+    if (drop > 0) { arr.splice(0, drop); logState[m].logged = Math.max(0, logState[m].logged - drop); saveLogState(); m === "agent" ? saveAgent() : saveChat(); }
+  }
+  function logFinishTurn(m) { flushLog(m); capHistory(m); }
+  function resetLog(m) { flushLog(m); logState[m] = { name: null, logged: 0 }; saveLogState(); }
+  /* ---------- UI state file: resume across runs even when the browser profile is fresh (sidecar /state) ---------- */
+  let lastStateJson = "";
+  function snapshotState() {
+    const o = {};
+    for (let i = 0; i < localStorage.length; i++) { const k = localStorage.key(i); if (k && k.indexOf("ds4:") === 0) o[k] = localStorage.getItem(k); }
+    return o;
+  }
+  function saveState(beacon) {
+    if (!logOn) return;
+    const snap = snapshotState();
+    if (!Object.keys(snap).length) return;                  // never clobber saved state with an empty snapshot (fresh profile / failed load)
+    let json; try { json = JSON.stringify(snap); } catch (e) { return; }
+    if (!beacon && json === lastStateJson) return;          // only write when something actually changed
+    lastStateJson = json;
+    if (beacon && navigator.sendBeacon) { try { navigator.sendBeacon(C.sidecarUrl + "/state", new Blob([json], { type: "text/plain" })); } catch (e) {} }
+    else fetch(C.sidecarUrl + "/state", { method: "POST", headers: { "Content-Type": "application/json" }, body: json }).catch(() => { lastStateJson = ""; });
+  }
+  async function loadState() {
+    try {
+      const c = new AbortController(); const to = setTimeout(() => c.abort(), 1500);
+      const r = await fetch(C.sidecarUrl + "/state", { signal: c.signal }); clearTimeout(to);
+      if (!r.ok) return;
+      const o = await r.json();
+      if (o && typeof o === "object") for (const k in o) { if (k.indexOf("ds4:") === 0 && typeof o[k] === "string") { try { localStorage.setItem(k, o[k]); } catch (e) {} } }
+    } catch (e) {}
+  }
+
+  const flushAllLogs = () => { flushLog("chat", true); flushLog("agent", true); saveState(true); };   // persist conversation log + UI state on close
+  window.addEventListener("pagehide", flushAllLogs);
+  window.addEventListener("beforeunload", flushAllLogs);
+  document.addEventListener("visibilitychange", () => { if (document.visibilityState === "hidden") flushAllLogs(); });
+
   function renderChatHistory() {
     messagesEl.innerHTML = "";
     for (const m of messages) {
@@ -844,14 +952,27 @@
   function restoreConversations() {
     try { messages = JSON.parse(localStorage.getItem(LS.chat) || "[]") || []; } catch (e) { messages = []; }
     try { agentMsgs = JSON.parse(localStorage.getItem(LS.agent) || "[]") || []; } catch (e) { agentMsgs = []; }
+    try { const ls = JSON.parse(localStorage.getItem("ds4:logState") || "null"); if (ls && ls.chat && ls.agent) { logState.chat = ls.chat; logState.agent = ls.agent; } } catch (e) {}
     agentMode = localStorage.getItem(LS.amode) || "ask";
     amToggle.classList.toggle("is-auto", agentMode === "auto");
     amToggle.querySelectorAll(".seg2__btn").forEach((x) => x.classList.toggle("is-active", x.dataset.am === agentMode));
     thinkingOn = localStorage.getItem("ds4:thinking") !== "0";   // default on
     $("thinkToggle").classList.toggle("is-on", thinkingOn);
-    renderChatHistory(); renderAgentHistory();
+    mode = localStorage.getItem("ds4:mode") || "chat";           // restore Chat/Agent
+    const savedStick = localStorage.getItem("ds4:stick");        // read Follow before render
+    rendering = true; renderChatHistory(); renderAgentHistory(); rendering = false;   // rebuild without firing the Follow auto-toggle
+    stick = savedStick !== "0"; reflectStick(); saveStick();     // apply restored Follow
+    railResyncs.forEach((f) => f());                             // re-apply sidebar collapse (localStorage may have just been seeded by loadState)
   }
 
-  restoreConversations();
-  updateView();
+  function boot() {
+    restoreConversations();
+    updateView();
+    syncWorkspace();                             // re-lock the saved folder if we restored into Agent mode (agent-only)
+    setInterval(() => saveState(false), 3000);   // mirror UI state to the state file as it changes
+  }
+  let hasLocal = false;
+  for (let i = 0; i < localStorage.length; i++) { const k = localStorage.key(i); if (k && k.indexOf("ds4:") === 0) { hasLocal = true; break; } }
+  if (hasLocal) boot();                          // persistent browser profile already holds our state → restore immediately (no flash)
+  else loadState().then(boot).catch(boot);       // fresh profile / different browser → seed from the state file first
 })();

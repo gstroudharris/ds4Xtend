@@ -10,3 +10,7 @@ __pycache__/
 
 # Local runtime logs
 *.log
+
+# DS4 frontend local runtime state (UI resume across runs) — never committed
+lastsession.json
+# Conversation logs live in logs/ (kept out of git by logs/.gitignore)

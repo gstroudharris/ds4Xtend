@@ -145,9 +145,10 @@ open_dashboard() {
       command -v "$c" >/dev/null 2>&1 && { b="$c"; break; }
     done
     if [ -n "$b" ]; then
-      cmd=("$b" "--app=$url" "--user-data-dir=$RUN_DIR/browser" --no-first-run --no-default-browser-check)
+      mkdir -p "$CONFIG_DIR/browser"          # persistent profile: the dashboard remembers UI state (localStorage) across runs
+      cmd=("$b" "--app=$url" "--user-data-dir=$CONFIG_DIR/browser" --no-first-run --no-default-browser-check)
     elif command -v firefox >/dev/null 2>&1; then
-      local prof="$RUN_DIR/ffprofile"
+      local prof="$CONFIG_DIR/ffprofile"      # persistent profile so localStorage survives across runs
       mkdir -p "$prof"                       # GUI Firefox errors if the --profile dir is missing
       cat > "$prof/user.js" <<'PREFS'
 user_pref("browser.aboutwelcome.enabled", false);
@@ -195,7 +196,7 @@ saved=""; [ -f "$CONFIG_FILE" ] && saved="$(cat "$CONFIG_FILE" 2>/dev/null)"
 
 # Interactive setup. Today this is just the ds4 install dir; future options go here too.
 run_setup() {
-  local default="${saved:-/home/grant/Dev/ds4}"
+  local default="${saved:-$(dirname "$FRONTEND_DIR")/ds4}"   # sibling ./ds4 next to this repo (override at the prompt)
   while :; do
     read -r -p "    Path to ds4 install [$default]: " ans || { echo; exit 1; }
     ans="${ans:-$default}"
@@ -278,7 +279,8 @@ fi
 # ---------- 4. sidecar + frontend ----------
 say "4. starting sidecar (:$SIDE_PORT) and ds4Frontend (:$WEB_PORT)"
 SIDE_LOG="$RUN_DIR/sidecar.log"
-( exec python3 "$SIDECAR" --port "$SIDE_PORT" --model "$MODEL" --backend "$DS4_BACKEND" ) > "$SIDE_LOG" 2>&1 &
+mkdir -p "$FRONTEND_DIR/logs"
+( exec python3 "$SIDECAR" --port "$SIDE_PORT" --model "$MODEL" --backend "$DS4_BACKEND" --logs-dir "$FRONTEND_DIR/logs" --state-file "$FRONTEND_DIR/lastsession.json" ) > "$SIDE_LOG" 2>&1 &
 register "metrics-sidecar" "$!"
 printf '    sidecar '; wait_http "http://127.0.0.1:$SIDE_PORT/healthz" 10 && { printf '\n'; ok "sidecar online (model gauge → $(basename "$MODEL"))"; } || { printf '\n'; warn "sidecar slow/own port busy"; }
 

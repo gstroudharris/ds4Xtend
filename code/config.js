@@ -6,6 +6,13 @@ window.DS4_CONFIG = {
   sidecarUrl: "http://localhost:8081",   // metrics sidecar (added in Phase 3)
   agentUrl:   "http://localhost:8082",   // sandboxed agent file-tools (Agent mode)
   pollHz: 2,                             // telemetry sample rate
+
+  // Conversation logging (sidecar writes <repo>/logs) + in-memory history cap. Tune freely.
+  logging: {
+    enabled: true,
+    maxHistoryChars: 4000000,            // per conversation kept in RAM (~8 MB UTF-16); older messages are
+                                         // appended to the log file and dropped from memory past this.
+  },
   model:  "deepseek-v4-flash",
   quant:  "q2-imatrix",                  // your model variant — shown in the header
   hardware: "",                          // leave blank: GPU name + backend are auto-detected live by the sidecar

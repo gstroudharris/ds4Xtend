@@ -2,18 +2,17 @@
 # Launch the DS4 frontend: metrics sidecar (:8081) + static server (:8090).
 # ds4-server must be started SEPARATELY (it needs the GPU + model). See below.
 set -euo pipefail
-cd "$(dirname "$0")"
+cd "$(dirname "$0")"                              # → code/ (sidecar + web assets live here)
+REPO="$(cd .. && pwd)"                            # → this repo root (ds4Frontend)
+DS4_DIR="${DS4_DIR:-$(dirname "$REPO")/ds4}"      # sibling ds4 checkout — override with DS4_DIR=...
+DS4_MODEL="${DS4_MODEL:-$DS4_DIR/ds4flash.gguf}"  # ds4's model — used by the sidecar's "model warm" gauge
 
-# ds4 checkout's model — used by the sidecar's "model warm" page-cache gauge.
-DS4_MODEL="${DS4_MODEL:-/home/grant/Dev/ds4/ds4flash.gguf}"
-
-cat <<'EOF'
+cat <<EOF
 Reminder — start ds4-server in another terminal (CORS + port 8080 + RAM-optimized):
 
-  cd /home/grant/Dev/ds4
-  DS4_CUDA_NO_DIRECT_IO=1 DS4_CUDA_KEEP_MODEL_PAGES=1 LD_LIBRARY_PATH=/usr/local/cuda/lib64 \
-    ./ds4-server --cuda --ssd-streaming --ctx 100000 --cors --port 8080
-  # first run after boot: cat /home/grant/Dev/ds4/ds4flash.gguf > /dev/null   (warm RAM)
+  cd $DS4_DIR
+  DS4_CUDA_NO_DIRECT_IO=1 DS4_CUDA_KEEP_MODEL_PAGES=1 LD_LIBRARY_PATH=/usr/local/cuda/lib64 ./ds4-server --cuda --ssd-streaming --ctx 100000 --cors --port 8080
+  # first run after boot: cat $DS4_MODEL > /dev/null   (warm RAM)
 
 EOF
 

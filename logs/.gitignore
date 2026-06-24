@@ -1,0 +1,3 @@
+# conversation logs written by metrics_sidecar.py — keep the dir, ignore the logs
+*
+!.gitignore

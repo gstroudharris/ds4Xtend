@@ -191,6 +191,8 @@ class Handler(BaseHTTPRequestHandler):
     model_path = None
     enable_warm = False
     backend = None
+    logs_dir = None
+    state_file = None
 
     def _cors(self):
         self.send_header("Access-Control-Allow-Origin", "*")
@@ -206,12 +208,26 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _body(self):
+        try:
+            n = int(self.headers.get("Content-Length", 0) or 0)
+        except ValueError:
+            n = 0
+        if n <= 0 or n > 64 * 1024 * 1024:
+            return {}
+        try:
+            return json.loads(self.rfile.read(n) or b"{}")
+        except ValueError:
+            return {}
+
     def do_OPTIONS(self):
         self.send_response(204); self._cors(); self.end_headers()
 
     def do_GET(self):
         if self.path.startswith("/healthz"):
             return self._json({"ok": True, "metrics_hits": _state["metrics_hits"]})
+        if self.path.startswith("/state"):
+            return self._json(self._read_state())
         if self.path.startswith("/metrics"):
             with _lock:
                 _state["metrics_hits"] += 1
@@ -236,12 +252,52 @@ class Handler(BaseHTTPRequestHandler):
         self._json({"error": "not found"}, 404)
 
     def do_POST(self):
+        if self.path.startswith("/state"):
+            return self._save_state(self._body())
+        if self.path.startswith("/log"):
+            return self._log(self._body())
         if self.path.startswith("/warm"):
             if not self.enable_warm or not self.model_path:
                 return self._json({"error": "warm disabled"}, 403)
             threading.Thread(target=self._warm, daemon=True).start()
             return self._json({"warming": True, "path": os.path.basename(self.model_path)})
         self._json({"error": "not found"}, 404)
+
+    def _log(self, b):
+        if not self.logs_dir:
+            return self._json({"error": "logging disabled"}, 403)
+        name = re.sub(r"[^A-Za-z0-9._-]", "_", os.path.basename(str(b.get("name") or "")))
+        if not name or name in (".", ".."):
+            return self._json({"error": "bad name"}, 400)
+        content = b.get("content", "")
+        if not isinstance(content, str):
+            content = str(content)
+        try:
+            os.makedirs(self.logs_dir, exist_ok=True)
+            with open(os.path.join(self.logs_dir, name), "a" if b.get("append") else "w", encoding="utf-8") as f:
+                f.write(content)
+        except OSError as e:
+            return self._json({"error": str(e)}, 500)
+        return self._json({"ok": True, "name": name, "bytes": len(content)})
+
+    def _read_state(self):
+        if not self.state_file:
+            return {}
+        try:
+            with open(self.state_file, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except (OSError, ValueError):
+            return {}
+
+    def _save_state(self, b):
+        if not self.state_file:
+            return self._json({"error": "state disabled"}, 403)
+        try:
+            with open(self.state_file, "w", encoding="utf-8") as f:
+                json.dump(b, f)
+        except (OSError, TypeError) as e:
+            return self._json({"error": str(e)}, 500)
+        return self._json({"ok": True, "keys": len(b) if isinstance(b, dict) else 0})
 
     def _warm(self):
         try:
@@ -260,21 +316,29 @@ def main():
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=8081)
     ap.add_argument("--model",
-                    default=os.environ.get("DS4_MODEL", "/home/grant/Dev/ds4/ds4flash.gguf"),
+                    default=os.environ.get("DS4_MODEL", os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "ds4", "ds4flash.gguf")),
                     help="GGUF for the 'model warm' page-cache gauge (env: DS4_MODEL). "
-                         "Lives in the ds4 checkout, not this repo.")
+                         "Defaults to the sibling ds4 checkout (../../ds4); ds4Service passes --model explicitly.")
     ap.add_argument("--backend", default=os.environ.get("DS4_BACKEND", ""),
                     help="inference backend label to report to the UI (cuda/rocm/cpu)")
     ap.add_argument("--enable-warm", action="store_true",
                     help="expose POST /warm (runs a full read of the model)")
+    ap.add_argument("--logs-dir", default=os.environ.get("DS4_LOGS_DIR", ""),
+                    help="directory for POST /log conversation logs (default: <repo>/logs)")
+    ap.add_argument("--state-file", default=os.environ.get("DS4_STATE_FILE", ""),
+                    help="file for GET/POST /state (UI resume across runs; default: <repo>/lastsession.json)")
     args = ap.parse_args()
 
     Handler.model_path = os.path.realpath(args.model) if os.path.exists(args.model) else None
     Handler.enable_warm = args.enable_warm
     Handler.backend = args.backend or None
+    Handler.logs_dir = (os.path.realpath(args.logs_dir) if args.logs_dir
+                        else os.path.realpath(os.path.join(os.path.dirname(__file__), "..", "logs")))
+    Handler.state_file = (os.path.realpath(args.state_file) if args.state_file
+                          else os.path.realpath(os.path.join(os.path.dirname(__file__), "..", "lastsession.json")))
     print(f"ds4 metrics sidecar on http://{args.host}:{args.port}  "
           f"model={Handler.model_path}  backend={Handler.backend}  "
-          f"warm={'on' if args.enable_warm else 'off'}", flush=True)
+          f"logs={Handler.logs_dir}  warm={'on' if args.enable_warm else 'off'}", flush=True)
     ThreadingHTTPServer((args.host, args.port), Handler).serve_forever()
 
 

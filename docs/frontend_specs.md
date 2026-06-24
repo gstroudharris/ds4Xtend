@@ -357,7 +357,7 @@ frontend/
 
 ```bash
 # 1) ds4-server on :8080 with CORS, RAM-optimized (see ../run.sh rationale)
-cd /home/grant/Dev/ds4
+cd ../ds4   # the ds4 checkout (sibling of this repo)
 DS4_CUDA_NO_DIRECT_IO=1 DS4_CUDA_KEEP_MODEL_PAGES=1 \
   ./ds4-server --cuda --ssd-streaming --ctx 100000 --cors --port 8080 \
   --kv-disk-dir ~/.ds4/server-kv --kv-disk-space-mb 8192
