@@ -37,6 +37,7 @@
     toggle.querySelectorAll(".segmented__btn").forEach((b) => b.classList.toggle("is-active", b.dataset.mode === mode));
     agentPanel.hidden = !agent;
     $("leftRail").hidden = !agent;            // working-tree rail is agent-only
+    $("agentModeToggle").hidden = !agent;     // Ask/Auto is agent-only (now sits next to Thinking)
     messagesEl.hidden = agent;
     emptyState.hidden = agent || messages.length > 0;
     const ae = $("agentEmpty"); if (ae) ae.hidden = agentMsgs.length > 0;
@@ -383,7 +384,7 @@
   /* ----- folder picker ----- */
   const picker = $("picker"), pickerList = $("pickerList"), pickerPath = $("pickerPath"), agentWs = $("agentWs"), agentEmpty = $("agentEmpty");
   let pickerCwd = "", pickerParent = null;
-  $("agentPick").addEventListener("click", () => { picker.hidden = false; browseTo(workspace || ""); });
+  $("agentPick").addEventListener("click", () => { const lr = $("leftRail"); if (lr.classList.contains("is-collapsed")) $("leftRailToggle").click(); picker.hidden = false; browseTo(workspace || ""); });
   $("pickerCancel").addEventListener("click", () => { picker.hidden = true; });
   $("pickerUp").addEventListener("click", () => { if (pickerParent != null) browseTo(pickerParent); });
   $("pickerLock").addEventListener("click", () => lockWorkspace(pickerCwd));
@@ -672,6 +673,10 @@
     const ui = agAssistant();
     let content = "", reasoning = "", tcs = [], previews = {}, tFirst = null, outTok = 0, usage = null;
     const t0 = performance.now();
+    const estPrompt = estimateTokens(agentMsgs);
+    beginLiveMetrics();
+    const liveTimer = setInterval(() => renderLiveMetrics({ t0, tFirst, outTokEst: outTok, estPrompt }), 150);   // live rail tiles during agent turns
+    try {
     const res = await fetch(C.serverUrl + "/v1/chat/completions", {
       method: "POST", headers: { "Content-Type": "application/json" }, signal: agentAbort.signal,
       body: JSON.stringify({ model: C.model, stream: true, stream_options: { include_usage: true }, tools: TOOLS, tool_choice: "auto", messages: [{ role: "system", content: AGENT_SYSTEM }, ...agentMsgs], ...(thinkingOn ? {} : { thinking: { type: "disabled" } }) }),
@@ -704,8 +709,10 @@
         }
       }
     }
+    } finally { clearInterval(liveTimer); }
     const tEnd = performance.now();
     ui.finalize(content);
+    finalizeTurnMetrics({ t0, tFirst, tEnd, usage, outTokEst: outTok, estPrompt });
     if (content) {
       const decSecs = (tEnd - (tFirst == null ? tEnd : tFirst)) / 1000;
       const tps = usage && usage.completion_tokens && decSecs > 0 ? (usage.completion_tokens / decSecs).toFixed(1) : "?";

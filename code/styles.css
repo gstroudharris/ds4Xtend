@@ -204,12 +204,13 @@ kbd {
   color: var(--text); font: inherit; max-height: 200px; padding: 6px 4px;
 }
 .composer__input::placeholder { color: var(--text-faint); }
-.composer__actions { display: flex; flex-direction: column; align-items: flex-end; gap: 8px; }
-.composer__btns { display: flex; gap: 8px; }
+.composer__actions { display: flex; gap: 8px; }
+.composer__below { display: flex; justify-content: flex-end; margin-top: 8px; }   /* Send/Loop toggle lives below the box */
 .composer__input:disabled { opacity: .5; cursor: not-allowed; }
 .composer.is-locked #clearBtn,
 .composer.is-locked #sendLoopToggle,
-.composer.is-locked .composer__opts { opacity: .45; pointer-events: none; }   /* everything but Stop is locked while looping */
+.composer.is-locked #thinkToggle,
+.composer.is-locked #agentModeToggle { opacity: .45; pointer-events: none; }   /* while looping: Stop + Follow stay usable */
 .composer__hint { text-align: center; color: var(--text-faint); font-size: 12px; margin-top: 10px; }
 
 .btn { appearance: none; font: inherit; font-weight: 600; cursor: pointer; border-radius: var(--r-btn); padding: 9px 18px; border: 1px solid transparent; transition: background .15s ease, border-color .15s ease, opacity .15s ease; }
@@ -341,6 +342,14 @@ kbd {
 .picker__foot { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 12px; border-top: 1px solid var(--divider); }
 .picker__hint { font-size: 12px; color: var(--text-faint); }
 .picker__btns { display: flex; gap: 8px; flex: none; }
+
+/* folder UI inside the left rail */
+.lrail__ws { display: flex; flex-direction: column; gap: 2px; padding: 8px 8px 6px; }
+.lrail__pick { display: block; width: calc(100% - 12px); margin: 0 6px 8px; text-align: center; }
+.lrail .picker { margin: 0 6px 8px; }
+.lrail .picker__list { max-height: 32vh; }
+.lrail .picker__foot { flex-direction: column; align-items: stretch; gap: 8px; }
+.lrail .picker__btns { justify-content: flex-end; }
 
 /* tool-call cards */
 .tcall { background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--r-tile); overflow: hidden; max-width: 94%; align-self: flex-start; }

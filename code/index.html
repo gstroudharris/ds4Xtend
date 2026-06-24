@@ -16,6 +16,25 @@
         <button class="rail__toggle" id="leftRailToggle" title="Collapse panel">«</button>
       </div>
       <div class="rail__body">
+        <div class="lrail__ws">
+          <span class="agent__wslabel">🔒 Workspace</span>
+          <span class="agent__ws" id="agentWs">no folder locked</span>
+        </div>
+        <button class="chip lrail__pick" id="agentPick">Choose folder…</button>
+        <div class="picker" id="picker" hidden>
+          <div class="picker__head">
+            <button class="btn btn--ghost" id="pickerUp">↑ Up</button>
+            <span class="picker__path" id="pickerPath">~</span>
+          </div>
+          <div class="picker__list" id="pickerList"></div>
+          <div class="picker__foot">
+            <span class="picker__hint">Locked to this folder only.</span>
+            <span class="picker__btns">
+              <button class="btn btn--ghost" id="pickerCancel">Cancel</button>
+              <button class="btn btn--primary" id="pickerLock">Lock</button>
+            </span>
+          </div>
+        </div>
         <div class="filetree__list" id="fileTreeList"><div class="filetree__empty">lock a folder to see files</div></div>
       </div>
     </aside>
@@ -53,38 +72,8 @@
 
         <!-- Agent mode: sandboxed file agent -->
         <div class="agent" id="agentPanel" hidden>
-          <div class="agent__bar">
-            <div class="agent__wsinfo">
-              <span class="agent__wslabel">🔒 Workspace</span>
-              <span class="agent__ws" id="agentWs">no folder locked</span>
-            </div>
-            <div class="agent__ctrls">
-              <button class="chip" id="agentPick">Choose folder…</button>
-              <div class="seg2" id="agentModeToggle" title="Ask: show a diff and wait before each write · Auto: apply writes immediately (still inside the folder)">
-                <span class="seg2__thumb"></span>
-                <button class="seg2__btn is-active" data-am="ask">Ask</button>
-                <button class="seg2__btn" data-am="auto">Auto</button>
-              </div>
-            </div>
-          </div>
-
-          <div class="picker" id="picker" hidden>
-            <div class="picker__head">
-              <button class="btn btn--ghost" id="pickerUp">↑ Up</button>
-              <span class="picker__path" id="pickerPath">~</span>
-            </div>
-            <div class="picker__list" id="pickerList"></div>
-            <div class="picker__foot">
-              <span class="picker__hint">The agent is locked to read/write inside the chosen folder only.</span>
-              <span class="picker__btns">
-                <button class="btn btn--ghost" id="pickerCancel">Cancel</button>
-                <button class="btn btn--primary" id="pickerLock">Lock to this folder</button>
-              </span>
-            </div>
-          </div>
-
           <div class="messages" id="agentMessages"></div>
-          <div class="agent__empty" id="agentEmpty">Lock a folder, then ask the agent to read or edit files in it.</div>
+          <div class="agent__empty" id="agentEmpty">Lock a folder (in the left panel), then ask the agent to read or edit files in it.</div>
         </div>
 
         <div class="messages" id="messages"></div>
@@ -93,21 +82,26 @@
       <footer class="composer">
         <div class="composer__opts">
           <button class="chip is-on" id="thinkToggle" title="Toggle thinking mode">Thinking</button>
+          <div class="seg2" id="agentModeToggle" hidden title="Ask: show a diff and wait before each write · Auto: apply writes immediately (still inside the folder)">
+            <span class="seg2__thumb"></span>
+            <button class="seg2__btn is-active" data-am="ask">Ask</button>
+            <button class="seg2__btn" data-am="auto">Auto</button>
+          </div>
           <button class="chip is-on" id="stickToggle" title="Stick to the bottom while streaming">↓ Following</button>
         </div>
         <div class="composer__box">
           <textarea id="input" class="composer__input" rows="1"
             placeholder="Message DS4… (Enter to send, Shift+Enter for newline)"></textarea>
           <div class="composer__actions">
-            <div class="composer__btns">
-              <button class="btn btn--ghost" id="clearBtn">Clear</button>
-              <button class="btn btn--primary" id="sendBtn">Send</button>
-            </div>
-            <div class="seg2" id="sendLoopToggle" title="Send: run once · Loop: re-run this prompt until you press Stop">
-              <span class="seg2__thumb"></span>
-              <button class="seg2__btn is-active" data-sl="send">Send</button>
-              <button class="seg2__btn" data-sl="loop">Loop</button>
-            </div>
+            <button class="btn btn--ghost" id="clearBtn">Clear</button>
+            <button class="btn btn--primary" id="sendBtn">Send</button>
+          </div>
+        </div>
+        <div class="composer__below">
+          <div class="seg2" id="sendLoopToggle" title="Send: run once · Loop: re-run this prompt until you press Stop">
+            <span class="seg2__thumb"></span>
+            <button class="seg2__btn is-active" data-sl="send">Send</button>
+            <button class="seg2__btn" data-sl="loop">Loop</button>
           </div>
         </div>
         <div class="composer__hint"><kbd>Enter</kbd> to send · <kbd>Shift</kbd>+<kbd>Enter</kbd> for a newline</div>
