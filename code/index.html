@@ -26,7 +26,7 @@
           <div class="brand__badge">DS</div>
           <div class="brand__meta">
             <div class="brand__title">DeepSeek V4 Flash</div>
-            <div class="brand__sub" id="brandSub">q2-imatrix · RTX 3090 · CUDA · SSD-streaming</div>
+            <div class="brand__sub" id="brandSub">inference dashboard</div>
           </div>
         </div>
 
@@ -93,6 +93,7 @@
       <footer class="composer">
         <div class="composer__opts">
           <button class="chip is-on" id="thinkToggle" title="Toggle thinking mode">Thinking</button>
+          <button class="chip is-on" id="stickToggle" title="Stick to the bottom while streaming">↓ Following</button>
         </div>
         <div class="composer__box">
           <textarea id="input" class="composer__input" rows="1"
@@ -126,7 +127,7 @@
       </section>
 
       <section>
-        <div class="rail__label" id="gpuLabel">GPU · NVIDIA RTX 3090</div>
+        <div class="rail__label" id="gpuLabel">GPU</div>
         <div class="util">
           <div class="util__head"><span>Utilization</span><span class="util__pct" id="gpuUtil">—</span></div>
           <canvas class="util__spark" id="utilSpark"></canvas>

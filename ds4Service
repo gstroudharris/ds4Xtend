@@ -12,8 +12,12 @@
 #   5. Streams ds4 + frontend debug output live.
 #   6. On Ctrl+C, stops everything it started, announcing each one.
 #
-# Ports/context overridable via env: DS4_SERVER_PORT DS4_SIDE_PORT DS4_WEB_PORT DS4_CTX
-# Skip model warming with DS4_NO_WARM=1.  Re-run setup (change the dir, future options): --setup
+# Ports/context via env: DS4_SERVER_PORT DS4_SIDE_PORT DS4_WEB_PORT DS4_CTX.  Skip warm: DS4_NO_WARM=1.
+# Hardware-agnostic: the GPU backend is auto-detected (nvidia-smi->cuda, rocm-smi->rocm, else cpu).
+#   Override per box:  --ds4-flags "--rocm --ssd-streaming"   (also DS4_SERVER_FLAGS / DS4_BACKEND /
+#   DS4_SERVER_ENV / DS4_LD_PATH, or a sourced ~/.config/ds4service/profile). Env is inherited, e.g.
+#   HSA_OVERRIDE_GFX_VERSION=11.0.0 ./ds4Service       (--cors/--port/--ctx are always added by us.)
+# Re-run setup (change the dir): --setup
 # Browser: opens the dashboard in a window it OWNS (Chrome/Chromium --app, else a separate
 # Firefox instance) so Ctrl+C closes just the dashboard, not your other tabs. DS4_NO_BROWSER=1
 # disables; DS4_BROWSER="<cmd>" overrides the launch command (the URL is appended).
@@ -131,7 +135,7 @@ PREFS
 verify_dir() {  # candidate -> sets DS4_DIR, MODEL
   local d="${1/#\~/$HOME}"
   [ -n "$d" ] && [ -d "$d" ]            || { errln "not a directory: ${1:-<empty>}"; return 1; }
-  [ -x "$d/ds4-server" ]                || { errln "no ds4-server binary in $d  (build: make cuda-generic)"; return 1; }
+  [ -x "$d/ds4-server" ]                || { errln "no ds4-server binary in $d  (build it — e.g. make cuda-generic, or the rocm/cpu target)"; return 1; }
   [ -e "$d/ds4flash.gguf" ]             || { errln "no ds4flash.gguf in $d  (run ./download_model.sh)"; return 1; }
   DS4_DIR="$(cd "$d" && pwd)"; MODEL="$DS4_DIR/ds4flash.gguf"; return 0
 }
@@ -141,7 +145,16 @@ printf '%s%sds4Service%s  —  DS4 inference + web UI launcher\n\n' "$B" "$CYN" 
 
 # ---------- 1. ds4 install directory ----------
 say "1. ds4 install directory"
-SETUP=0; [ "${1:-}" = "--setup" ] && SETUP=1
+SETUP=0; DS4_FLAGS_CLI=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --setup)        SETUP=1 ;;
+    --ds4-flags)    shift; DS4_FLAGS_CLI="${1:-}" ;;
+    --ds4-flags=*)  DS4_FLAGS_CLI="${1#*=}" ;;
+    *)              warn "ignoring unknown argument: $1" ;;
+  esac
+  shift
+done
 saved=""; [ -f "$CONFIG_FILE" ] && saved="$(cat "$CONFIG_FILE" 2>/dev/null)"
 
 # Interactive setup. Today this is just the ds4 install dir; future options go here too.
@@ -184,11 +197,40 @@ if [ "${DS4_NO_WARM:-0}" != "1" ]; then
   ( cat "$MODEL" >/dev/null 2>&1 ) & register "model-warm (cat)" "$!"
   ok "warming model into RAM page cache (background)"
 fi
+# --- backend profile: auto-detect, fully overridable (env inherited, --ds4-flags, profile file) ---
+PROFILE_FILE="$CONFIG_DIR/profile"
+[ -f "$PROFILE_FILE" ] && . "$PROFILE_FILE"     # optional: export HSA_*, set DS4_BACKEND / DS4_SERVER_FLAGS / DS4_SERVER_ENV / DS4_LD_PATH
+detect_backend() {
+  command -v nvidia-smi >/dev/null 2>&1 && { echo cuda; return; }
+  { command -v rocm-smi >/dev/null 2>&1 || command -v rocminfo >/dev/null 2>&1 || [ -d /opt/rocm ]; } && { echo rocm; return; }
+  echo cpu
+}
+FLAGS="${DS4_FLAGS_CLI:-${DS4_SERVER_FLAGS:-}}"   # precedence: --ds4-flags > $DS4_SERVER_FLAGS > per-backend default
+DS4_BACKEND="${DS4_BACKEND:-}"
+if [ -z "$DS4_BACKEND" ]; then                    # infer from explicit flags, else sniff the hardware
+  case " $FLAGS " in
+    *" --rocm "*) DS4_BACKEND=rocm ;;
+    *" --cuda "*) DS4_BACKEND=cuda ;;
+    *" --cpu "*)  DS4_BACKEND=cpu ;;
+    *)            DS4_BACKEND="$(detect_backend)" ;;
+  esac
+fi
+case "$DS4_BACKEND" in
+  cuda) DEFENV="DS4_CUDA_NO_DIRECT_IO=1 DS4_CUDA_KEEP_MODEL_PAGES=1"; DEFLD="/usr/local/cuda/lib64"; AUTOFLAGS="--cuda --ssd-streaming" ;;
+  rocm) DEFENV=""; DEFLD="/opt/rocm/lib"; AUTOFLAGS="--rocm --ssd-streaming" ;;
+  cpu)  DEFENV=""; DEFLD=""; AUTOFLAGS="" ;;
+  *)    DEFENV=""; DEFLD=""; AUTOFLAGS="--$DS4_BACKEND --ssd-streaming" ;;
+esac
+[ -z "$FLAGS" ] && FLAGS="$AUTOFLAGS"
+DS4_SERVER_ENV="${DS4_SERVER_ENV:-$DEFENV}"
+DS4_LD_PATH="${DS4_LD_PATH:-$DEFLD}"
+ok "backend: $DS4_BACKEND   ds4-server flags: ${FLAGS:-(none / cpu)}   (override: --ds4-flags / DS4_BACKEND / DS4_SERVER_ENV / DS4_LD_PATH)"
 SERVER_LOG="$RUN_DIR/ds4-server.log"
-( cd "$DS4_DIR" && DS4_CUDA_NO_DIRECT_IO=1 DS4_CUDA_KEEP_MODEL_PAGES=1 \
-    LD_LIBRARY_PATH="/usr/local/cuda/lib64:${LD_LIBRARY_PATH:-}" \
-    exec ./ds4-server --cuda --ssd-streaming --ctx "$SERVER_CTX" --cors --port "$SERVER_PORT" \
-  ) > "$SERVER_LOG" 2>&1 &
+( cd "$DS4_DIR"
+  [ -n "$DS4_LD_PATH" ] && export LD_LIBRARY_PATH="$DS4_LD_PATH:${LD_LIBRARY_PATH:-}"
+  for kv in $DS4_SERVER_ENV; do export "$kv"; done
+  exec ./ds4-server $FLAGS --ctx "$SERVER_CTX" --cors --port "$SERVER_PORT"
+) > "$SERVER_LOG" 2>&1 &
 register "ds4-server" "$!"
 printf '    waiting for model load '
 if wait_http "http://127.0.0.1:$SERVER_PORT/v1/models" 180; then
@@ -200,7 +242,7 @@ fi
 # ---------- 4. sidecar + frontend ----------
 say "4. starting sidecar (:$SIDE_PORT) and ds4Frontend (:$WEB_PORT)"
 SIDE_LOG="$RUN_DIR/sidecar.log"
-( exec python3 "$SIDECAR" --port "$SIDE_PORT" --model "$MODEL" ) > "$SIDE_LOG" 2>&1 &
+( exec python3 "$SIDECAR" --port "$SIDE_PORT" --model "$MODEL" --backend "$DS4_BACKEND" ) > "$SIDE_LOG" 2>&1 &
 register "metrics-sidecar" "$!"
 printf '    sidecar '; wait_http "http://127.0.0.1:$SIDE_PORT/healthz" 10 && { printf '\n'; ok "sidecar online (model gauge → $(basename "$MODEL"))"; } || { printf '\n'; warn "sidecar slow/own port busy"; }
 

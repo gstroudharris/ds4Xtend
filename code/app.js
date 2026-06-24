@@ -46,16 +46,23 @@
   }
 
   /* ---------------- collapsible side rails ---------------- */
-  function wireRail(railId, btnId, collapseArrow, expandArrow, lsKey) {
+  function wireRail(railId, btnId, arrows, lsKey) {
     const rail = $(railId), btn = $(btnId);
     if (!rail || !btn) return;
-    const apply = (c) => { rail.classList.toggle("is-collapsed", c); btn.textContent = c ? expandArrow : collapseArrow; btn.title = c ? "Expand panel" : "Collapse panel"; };
+    const mq = window.matchMedia("(max-width: 1100px)");   // stacked top/bottom → vertical arrows; side-by-side → horizontal
     let collapsed = false; try { collapsed = localStorage.getItem(lsKey) === "1"; } catch (e) {}
-    apply(collapsed);
-    btn.addEventListener("click", () => { collapsed = !collapsed; apply(collapsed); try { localStorage.setItem(lsKey, collapsed ? "1" : "0"); } catch (e) {} });
+    const render = () => {
+      rail.classList.toggle("is-collapsed", collapsed);
+      const v = mq.matches;
+      btn.textContent = collapsed ? (v ? arrows.ve : arrows.he) : (v ? arrows.vc : arrows.hc);
+      btn.title = collapsed ? "Expand panel" : "Collapse panel";
+    };
+    render();
+    btn.addEventListener("click", () => { collapsed = !collapsed; render(); try { localStorage.setItem(lsKey, collapsed ? "1" : "0"); } catch (e) {} });
+    if (mq.addEventListener) mq.addEventListener("change", render); else mq.addListener(render);
   }
-  wireRail("leftRail", "leftRailToggle", "«", "»", "ds4:lrail");
-  wireRail("rightRail", "rightRailToggle", "»", "«", "ds4:rrail");
+  wireRail("leftRail", "leftRailToggle", { hc: "«", he: "»", vc: "▲", ve: "▼" }, "ds4:lrail");
+  wireRail("rightRail", "rightRailToggle", { hc: "»", he: "«", vc: "▼", ve: "▲" }, "ds4:rrail");
 
   /* ---------------- composer ---------------- */
   const input = $("input");
@@ -85,8 +92,16 @@
   let streaming = false;
   let abortCtrl = null;
 
-  function nearBottom() { const c = messagesEl.parentElement; return c.scrollHeight - c.scrollTop - c.clientHeight < 120; }
-  function scrollDown(force) { const c = messagesEl.parentElement; if (force || nearBottom()) c.scrollTop = c.scrollHeight; }
+  let stick = true;
+  const stickToggle = $("stickToggle");
+  function reflectStick() { stickToggle.classList.toggle("is-on", stick); stickToggle.textContent = stick ? "↓ Following" : "↓ Follow"; }
+  function scrollDown(force) { if (force || stick) conversationEl.scrollTop = conversationEl.scrollHeight; }
+  conversationEl.addEventListener("scroll", () => {
+    const atBottom = conversationEl.scrollHeight - conversationEl.scrollTop - conversationEl.clientHeight < 48;
+    if (atBottom !== stick) { stick = atBottom; reflectStick(); }   // auto on/off as the user scrolls
+  });
+  stickToggle.addEventListener("click", () => { stick = !stick; reflectStick(); if (stick) conversationEl.scrollTop = conversationEl.scrollHeight; });
+  reflectStick();
 
   function appendUser(text) {
     const el = document.createElement("div");
@@ -101,9 +116,8 @@
       raf = 0;
       if (dead || shown >= target.length) return;
       const remaining = target.length - shown;
-      shown += Math.min(40, Math.max(1, Math.ceil(remaining / 7)));   // rapid typing; catches up so it never lags far behind the stream
-      if (shown > target.length) shown = target.length;
-      textEl.textContent = target.slice(0, shown);
+      shown = Math.min(target.length, shown + Math.max(0.5, Math.min(remaining * 0.08, 12)));   // gentle fractional ease — smooth even cadence; a small steady lag is fine
+      textEl.textContent = target.slice(0, Math.floor(shown));
       if (onFrame) onFrame();
       schedule();
     }
@@ -123,14 +137,14 @@
     const thinkText = document.createElement("span"); const thinkCur = document.createElement("span"); thinkCur.className = "cursor"; thinkCur.hidden = true;
     thinkBody.append(thinkText, thinkCur);
     const body = document.createElement("div"); body.className = "md is-streaming";
-    const bodyText = document.createElement("span"); const bodyCur = document.createElement("span"); bodyCur.className = "cursor"; bodyCur.hidden = true;
+    const bodyText = document.createElement("span"); const bodyCur = document.createElement("span"); bodyCur.className = "cursor"; bodyCur.hidden = false;   // visible immediately → "working" cursor while awaiting first token
     body.append(bodyText, bodyCur);
     const meta = document.createElement("div"); meta.className = "msg__meta"; meta.hidden = true;
     root.append(think, body, meta);
     messagesEl.appendChild(root); scrollDown(true);
     const tT = makeTyper(thinkText, thinkCur, scrollDown), bT = makeTyper(bodyText, bodyCur, scrollDown);
     return {
-      thinking(t) { think.hidden = false; thinkCur.hidden = false; tT.feed(t); },
+      thinking(t) { think.hidden = false; bodyCur.hidden = true; thinkCur.hidden = false; tT.feed(t); },
       stream(t) { thinkCur.hidden = true; tT.flush(); bodyCur.hidden = false; bT.feed(t); },
       finalize(content) { tT.finish(); bT.finish(); thinkCur.remove(); bodyCur.remove(); body.classList.remove("is-streaming"); body.innerHTML = mdRender(content); addCopy(body); think.open = false; },
       meta(s) { meta.hidden = false; meta.textContent = s; },
@@ -413,8 +427,8 @@
   function stopAgent() { if (agentAbort) agentAbort.abort(); }
 
   /* ----- agent rendering ----- */
-  function agScroll() { conversationEl.scrollTop = conversationEl.scrollHeight; }
-  function agUser(text) { const e = document.createElement("div"); e.className = "msg msg--user"; e.textContent = text; agentMessagesEl.appendChild(e); agScroll(); }
+  function agScroll(force) { scrollDown(force); }
+  function agUser(text) { const e = document.createElement("div"); e.className = "msg msg--user"; e.textContent = text; agentMessagesEl.appendChild(e); agScroll(true); }
   function agAssistant() {
     const root = document.createElement("div"); root.className = "msg msg--assistant";
     const think = document.createElement("details"); think.className = "think"; think.open = true; think.hidden = true;
@@ -423,12 +437,14 @@
     const thinkText = document.createElement("span"); const thinkCur = document.createElement("span"); thinkCur.className = "cursor"; thinkCur.hidden = true;
     thinkBody.append(thinkText, thinkCur);
     const body = document.createElement("div"); body.className = "md is-streaming";
-    const bodyText = document.createElement("span"); const bodyCur = document.createElement("span"); bodyCur.className = "cursor"; bodyCur.hidden = true;
+    const bodyText = document.createElement("span"); const bodyCur = document.createElement("span"); bodyCur.className = "cursor"; bodyCur.hidden = false;   // visible immediately → "working" cursor while awaiting first token
     body.append(bodyText, bodyCur);
-    root.append(think, body); agentMessagesEl.appendChild(root); agScroll();
+    const meta = document.createElement("div"); meta.className = "msg__meta"; meta.hidden = true;
+    root.append(think, body, meta); agentMessagesEl.appendChild(root); agScroll();
     const tT = makeTyper(thinkText, thinkCur, scrollDown), bT = makeTyper(bodyText, bodyCur, scrollDown);
     return {
-      thinking(t) { think.hidden = false; thinkCur.hidden = false; tT.feed(t); },
+      meta(s) { meta.hidden = false; meta.textContent = s; },
+      thinking(t) { think.hidden = false; bodyCur.hidden = true; thinkCur.hidden = false; tT.feed(t); },
       stream(t) { thinkCur.hidden = true; tT.flush(); bodyCur.hidden = false; bT.feed(t); },
       cursorOff() { thinkCur.hidden = true; bodyCur.hidden = true; tT.flush(); bT.flush(); },   // tool/preview owns the cursor now
       finalize(t) { tT.finish(); bT.finish(); thinkCur.remove(); bodyCur.remove(); body.classList.remove("is-streaming"); if (t) { body.innerHTML = mdRender(t); addCopy(body); } else { root.remove(); } think.open = false; },
@@ -612,10 +628,11 @@
 
   async function agentStreamTurn() {
     const ui = agAssistant();
-    let content = "", reasoning = "", tcs = [], previews = {};
+    let content = "", reasoning = "", tcs = [], previews = {}, tFirst = null, outTok = 0, usage = null;
+    const t0 = performance.now();
     const res = await fetch(C.serverUrl + "/v1/chat/completions", {
       method: "POST", headers: { "Content-Type": "application/json" }, signal: agentAbort.signal,
-      body: JSON.stringify({ model: C.model, stream: true, tools: TOOLS, tool_choice: "auto", messages: [{ role: "system", content: AGENT_SYSTEM }, ...agentMsgs], ...(thinkingOn ? {} : { thinking: { type: "disabled" } }) }),
+      body: JSON.stringify({ model: C.model, stream: true, stream_options: { include_usage: true }, tools: TOOLS, tool_choice: "auto", messages: [{ role: "system", content: AGENT_SYSTEM }, ...agentMsgs], ...(thinkingOn ? {} : { thinking: { type: "disabled" } }) }),
     });
     if (!res.ok) throw new Error(`HTTP ${res.status} — ${(await res.text()).slice(0, 180)}`);
     const reader = res.body.getReader(), dec = new TextDecoder(); let buf = "";
@@ -627,9 +644,10 @@
         const s = line.trim(); if (!s.startsWith("data:")) continue;
         const data = s.slice(5).trim(); if (data === "[DONE]") continue;
         let j; try { j = JSON.parse(data); } catch { continue; }
+        if (j.usage) usage = j.usage;
         const d = (j.choices && j.choices[0] && j.choices[0].delta) || {};
-        if (d.reasoning_content) { reasoning += d.reasoning_content; ui.thinking(reasoning); }
-        if (d.content) { content += d.content; ui.stream(content); }
+        if (d.reasoning_content) { if (tFirst === null) tFirst = performance.now(); reasoning += d.reasoning_content; outTok++; ui.thinking(reasoning); }
+        if (d.content) { if (tFirst === null) tFirst = performance.now(); content += d.content; outTok++; ui.stream(content); }
         if (d.tool_calls) for (const t of d.tool_calls) {
           ui.cursorOff();                                    // the tool/preview owns the cursor now
           const i = t.index || 0; tcs[i] = tcs[i] || { id: "", name: "", args: "" };
@@ -644,7 +662,14 @@
         }
       }
     }
+    const tEnd = performance.now();
     ui.finalize(content);
+    if (content) {
+      const decSecs = (tEnd - (tFirst == null ? tEnd : tFirst)) / 1000;
+      const tps = usage && usage.completion_tokens && decSecs > 0 ? (usage.completion_tokens / decSecs).toFixed(1) : "?";
+      const tok = usage && usage.completion_tokens != null ? usage.completion_tokens : outTok;
+      ui.meta(tps + " t/s · " + tok + " tokens · " + ((tEnd - t0) / 1000).toFixed(1) + " s");
+    }
     return { content, toolCalls: tcs.filter(Boolean) };
   }
 
@@ -713,7 +738,7 @@
   function applyMetrics(m) {
     if (m.gpu) {
       const gp = m.gpu;
-      if (gp.name) $("gpuLabel").textContent = "GPU · " + gp.name;
+      if (gp.name) { $("gpuLabel").textContent = "GPU · " + gp.name; $("brandSub").textContent = (C.quant ? C.quant + " · " : "") + gp.name + (m.backend ? " · " + String(m.backend).toUpperCase() : ""); }
       if (gp.util_pct != null) { setText("gpuUtil", gp.util_pct + " %"); hist.push(gp.util_pct); hist.shift(); $("gpuPeak").textContent = "peak " + Math.max(...hist) + " %"; drawSpark(); }
       if (gp.temp_c != null) setText("gpuTemp", gp.temp_c + " °C");
       if (gp.power_w != null) setText("gpuPower", `${Math.round(gp.power_w)} / ${Math.round(gp.power_limit_w)} W`);

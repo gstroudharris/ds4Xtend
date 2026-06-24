@@ -2,15 +2,17 @@
 """DS4 frontend metrics sidecar (Phase 3).
 
 Serves GPU + RAM + disk + model-residency telemetry as JSON so the browser SPA
-(which can't run nvidia-smi) can render the right-rail panel. Stdlib only.
+(which can't run nvidia-smi/rocm-smi) can render the right-rail panel. Stdlib only.
 
   GET /metrics   -> one JSON sample (see schema below)
   GET /healthz   -> {"ok": true}
   POST /warm     -> warm the model into page cache (only if --enable-warm)
 
-Binds 127.0.0.1 by default. Sends permissive CORS so the SPA (different origin)
-can fetch it. The model-residency ("model warm") figure uses mincore(2) over the
-mmap'd GGUF; it is refreshed on a slow cadence because it scans ~21M page flags.
+Vendor-agnostic: GPU stats come from `nvidia-smi` (NVIDIA) or `rocm-smi` (AMD),
+whichever is present — so a clone on an AMD box renders correctly with no edits.
+Binds 127.0.0.1 by default; permissive CORS so the SPA (different origin) can
+fetch it. The model-residency ("model warm") figure uses mincore(2) over the
+mmap'd GGUF; refreshed on a slow cadence because it scans ~21M page flags.
 """
 import argparse, ctypes, ctypes.util, json, mmap, os, re, subprocess, threading, time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -21,39 +23,88 @@ _lock = threading.Lock()
 _state = {"disk": None, "resident": None, "resident_ts": 0.0, "metrics_hits": 0}
 _BIT0 = bytes((v & 1) for v in range(256))  # translate table: byte -> low bit
 
-GPU_FIELDS = ("name", "utilization.gpu", "temperature.gpu", "power.draw",
-              "power.limit", "clocks.sm", "memory.used", "memory.total")
+NV_FIELDS = ("name", "utilization.gpu", "temperature.gpu", "power.draw",
+             "power.limit", "clocks.sm", "memory.used", "memory.total")
 
 
 def _num(s, cast=float):
-    s = s.strip()
+    """First numeric token of a value, cast — tolerates units like '45 W', '1920Mhz'."""
+    if s is None:
+        return None
+    m = re.search(r"-?\d+(?:\.\d+)?", str(s))
+    if not m:
+        return None
     try:
-        return cast(s)
+        return cast(float(m.group(0)))
     except (ValueError, TypeError):
         return None
 
 
-def gpu_stats():
+def _nvidia_gpu():
     try:
         out = subprocess.run(
-            ["nvidia-smi", "--query-gpu=" + ",".join(GPU_FIELDS),
+            ["nvidia-smi", "--query-gpu=" + ",".join(NV_FIELDS),
              "--format=csv,noheader,nounits"],
             capture_output=True, text=True, timeout=4).stdout.strip().splitlines()
         if not out:
             return None
         p = [x.strip() for x in out[0].split(",")]
         return {
-            "name": p[0],
-            "util_pct": _num(p[1], int),
-            "temp_c": _num(p[2], int),
-            "power_w": _num(p[3]),
-            "power_limit_w": _num(p[4]),
+            "vendor": "nvidia", "name": p[0],
+            "util_pct": _num(p[1], int), "temp_c": _num(p[2], int),
+            "power_w": _num(p[3]), "power_limit_w": _num(p[4]),
             "sm_clock_mhz": _num(p[5], int),
-            "vram_used_mb": _num(p[6], int),
-            "vram_total_mb": _num(p[7], int),
+            "vram_used_mb": _num(p[6], int), "vram_total_mb": _num(p[7], int),
         }
     except Exception:
         return None
+
+
+def _amd_gpu():
+    """AMD GPU via `rocm-smi --json`. Key names vary across versions, so match fuzzily."""
+    try:
+        out = subprocess.run(
+            ["rocm-smi", "--showproductname", "--showuse", "--showtemp", "--showpower",
+             "--showmeminfo", "vram", "--showclocks", "--json"],
+            capture_output=True, text=True, timeout=5).stdout
+        data = json.loads(out)
+    except Exception:
+        return None
+    cards = [v for k, v in (data or {}).items()
+             if isinstance(v, dict) and k.lower().startswith("card")]
+    if not cards:
+        return None
+    c = cards[0]
+
+    def pick(*subs):
+        for k, v in c.items():
+            if all(s in k.lower() for s in subs):
+                return v
+        return None
+
+    vt = vu = None  # VRAM total vs used — 'total' key must not also say 'used'
+    for k, v in c.items():
+        kl = k.lower()
+        if "vram" in kl and "total" in kl and "used" not in kl:
+            vt = _num(v, int)
+        elif "vram" in kl and "used" in kl:
+            vu = _num(v, int)
+
+    return {
+        "vendor": "amd",
+        "name": str(pick("card series") or pick("product name") or pick("card model") or "AMD GPU").strip() or "AMD GPU",
+        "util_pct": _num(pick("gpu use"), int),
+        "temp_c": _num(pick("temperature", "edge") or pick("temperature"), int),
+        "power_w": _num(pick("average", "power") or pick("socket", "power") or pick("power")),
+        "power_limit_w": _num(pick("max", "power") or pick("cap", "power")),
+        "sm_clock_mhz": _num(pick("sclk"), int),
+        "vram_used_mb": (vu // (1024 * 1024)) if vu is not None else None,
+        "vram_total_mb": (vt // (1024 * 1024)) if vt is not None else None,
+    }
+
+
+def gpu_stats():
+    return _nvidia_gpu() or _amd_gpu()
 
 
 def ram_stats():
@@ -73,13 +124,13 @@ def ram_stats():
 
 
 def disk_read_rate():
-    """Aggregate read MB/s across whole NVMe disks, as a delta between calls."""
+    """Aggregate read MB/s across whole disks (NVMe + SATA SSD/HDD), as a delta between calls."""
     total_sectors, now = 0, time.time()
     try:
         with open("/proc/diskstats") as f:
             for line in f:
                 p = line.split()
-                if len(p) > 5 and re.fullmatch(r"nvme\d+n\d+", p[2]):
+                if len(p) > 5 and re.fullmatch(r"nvme\d+n\d+|sd[a-z]+", p[2]):
                     total_sectors += int(p[5])
     except (OSError, ValueError):
         return None
@@ -139,6 +190,7 @@ def _mincore_bytes(path):
 class Handler(BaseHTTPRequestHandler):
     model_path = None
     enable_warm = False
+    backend = None
 
     def _cors(self):
         self.send_header("Access-Control-Allow-Origin", "*")
@@ -169,6 +221,7 @@ class Handler(BaseHTTPRequestHandler):
                 "gpu": gpu_stats(),
                 "ram": ram_stats(),
                 "disk": {"read_mb_s": disk_read_rate()},
+                "backend": self.backend,
                 "model": None,
             }
             if model:
@@ -210,14 +263,18 @@ def main():
                     default=os.environ.get("DS4_MODEL", "/home/grant/Dev/ds4/ds4flash.gguf"),
                     help="GGUF for the 'model warm' page-cache gauge (env: DS4_MODEL). "
                          "Lives in the ds4 checkout, not this repo.")
+    ap.add_argument("--backend", default=os.environ.get("DS4_BACKEND", ""),
+                    help="inference backend label to report to the UI (cuda/rocm/cpu)")
     ap.add_argument("--enable-warm", action="store_true",
                     help="expose POST /warm (runs a full read of the model)")
     args = ap.parse_args()
 
     Handler.model_path = os.path.realpath(args.model) if os.path.exists(args.model) else None
     Handler.enable_warm = args.enable_warm
+    Handler.backend = args.backend or None
     print(f"ds4 metrics sidecar on http://{args.host}:{args.port}  "
-          f"model={Handler.model_path}  warm={'on' if args.enable_warm else 'off'}", flush=True)
+          f"model={Handler.model_path}  backend={Handler.backend}  "
+          f"warm={'on' if args.enable_warm else 'off'}", flush=True)
     ThreadingHTTPServer((args.host, args.port), Handler).serve_forever()
 
 

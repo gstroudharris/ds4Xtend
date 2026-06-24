@@ -7,8 +7,8 @@ window.DS4_CONFIG = {
   agentUrl:   "http://localhost:8082",   // sandboxed agent file-tools (Agent mode)
   pollHz: 2,                             // telemetry sample rate
   model:  "deepseek-v4-flash",
-  quant:  "q2-imatrix",
-  hardware: "RTX 3090 · CUDA · SSD-streaming",
+  quant:  "q2-imatrix",                  // your model variant — shown in the header
+  hardware: "",                          // leave blank: GPU name + backend are auto-detected live by the sidecar
 
   // Quick-start prompt cards (from the reference image).
   suggestions: [
@@ -21,7 +21,7 @@ window.DS4_CONFIG = {
   // Phase-1 placeholder telemetry so the right rail reads correctly before the
   // sidecar exists. Replaced by live nvidia-smi/proc data in Phase 3.
   demo: {
-    gpuName: "NVIDIA RTX 3090",
+    gpuName: "GPU",
     util: 41, peak: 62, temp: 38, powerDraw: 45, powerLimit: 370, smClock: 1920,
     vramUsed: 15.5, vramTotal: 24,
     ramUsed: 93, ramTotal: 126, modelWarm: 81, modelSize: 81,
