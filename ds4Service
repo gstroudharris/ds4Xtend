@@ -334,12 +334,19 @@ fi
 say "4. starting sidecar (:$SIDE_PORT) and ds4Frontend (:$WEB_PORT)"
 SIDE_LOG="$RUN_DIR/sidecar.log"
 mkdir -p "$FRONTEND_DIR/logs"
-# Report the launched ctx to the UI for the headroom meter — but only on the built-in path, where
-# we actually know it. When delegating to ds4-server.sh the script owns ctx (see USE_SCRIPT above),
-# so we send nothing and the frontend falls back to config.serverCtx.
-SIDE_CTX_ARG=()
-[ "$USE_SCRIPT" = "1" ] || SIDE_CTX_ARG=(--ctx "$SERVER_CTX")
-( exec python3 "$SIDECAR" --port "$SIDE_PORT" --model "$MODEL" --backend "$DS4_BACKEND" ${SIDE_CTX_ARG[@]+"${SIDE_CTX_ARG[@]}"} --logs-dir "$FRONTEND_DIR/logs" --state-file "$FRONTEND_DIR/lastsession.json" ) > "$SIDE_LOG" 2>&1 &
+# Resolve the ctx to report to the UI's headroom meter + context-nudge safety net (which goes dormant
+# without a ctx). Built-in path: we know it exactly (SERVER_CTX). Delegated ds4-server.sh: the script owns
+# ctx, so read a literal `--ctx N` out of it; if it has none (dynamic/var), fall back to this backend's
+# known limit (DEFCTX — e.g. 32768 on ROCm) so the meter + nudges still work instead of going "ctx unknown".
+# (The UI also self-heals: it learns the real ctx from a 400 on the first overflow.)
+if [ "$USE_SCRIPT" = "1" ]; then
+  SIDE_CTX="$(grep -oE -- '--ctx[[:space:]=]+[0-9]+' "$SERVER_SCRIPT" 2>/dev/null | grep -oE '[0-9]+' | tail -n1)"
+  if [ -n "$SIDE_CTX" ]; then ok "context meter: ctx $SIDE_CTX (read --ctx from $(basename "$SERVER_SCRIPT"))"
+  else SIDE_CTX="$DEFCTX"; ok "context meter: ctx $SIDE_CTX ($DS4_BACKEND default — $(basename "$SERVER_SCRIPT") has no literal --ctx)"; fi
+else
+  SIDE_CTX="$SERVER_CTX"
+fi
+( exec python3 "$SIDECAR" --port "$SIDE_PORT" --model "$MODEL" --backend "$DS4_BACKEND" --ctx "$SIDE_CTX" --logs-dir "$FRONTEND_DIR/logs" --state-file "$FRONTEND_DIR/lastsession.json" ) > "$SIDE_LOG" 2>&1 &
 register "metrics-sidecar" "$!"
 printf '    sidecar '; wait_http "http://127.0.0.1:$SIDE_PORT/healthz" 10 && { printf '\n'; ok "sidecar online (model gauge → $(basename "$MODEL"))"; } || { printf '\n'; warn "sidecar slow/own port busy"; }
 

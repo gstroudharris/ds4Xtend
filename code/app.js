@@ -276,7 +276,7 @@
     try { localStorage.setItem("ds4:loop", loopMode ? "1" : "0"); } catch (e) {}
     reflectSL();
   }));
-  function stopLoop() { looping = false; if (abortCtrl) abortCtrl.abort(); if (agentAbort) agentAbort.abort(); }
+  function stopLoop() { looping = false; if (abortCtrl) abortCtrl.abort(); stopAgent(); }   // stopAgent also unblocks a pending approval, so Stop works mid-prompt
   async function chatOnce(text) { appendUser(text); messages.push({ role: "user", content: text }); updateView(); await runStream(); }
   async function startLoop() {
     const text = input.value.trim();
