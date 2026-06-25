@@ -362,6 +362,8 @@ DS4_CUDA_NO_DIRECT_IO=1 DS4_CUDA_KEEP_MODEL_PAGES=1 \
   ./ds4-server --cuda --ssd-streaming --ctx 100000 --cors --port 8080 \
   --kv-disk-dir ~/.ds4/server-kv --kv-disk-space-mb 8192
 # (warm once: cat ds4flash.gguf > /dev/null)
+# AMD / ROCm: use --rocm + HSA_OVERRIDE_GFX_VERSION=11.0.0; full residency needs --ctx 32768 (100000
+# OOMs). In practice just run ../ds4Service — it auto-detects backend + ctx, or runs your ds4-server.sh.
 
 # 2) metrics sidecar on :8081
 python3 metrics_sidecar.py --port 8081   # from this repo

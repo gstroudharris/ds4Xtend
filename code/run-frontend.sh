@@ -8,10 +8,14 @@ DS4_DIR="${DS4_DIR:-$(dirname "$REPO")/ds4}"      # sibling ds4 checkout — ove
 DS4_MODEL="${DS4_MODEL:-$DS4_DIR/ds4flash.gguf}"  # ds4's model — used by the sidecar's "model warm" gauge
 
 cat <<EOF
-Reminder — start ds4-server in another terminal (CORS + port 8080 + RAM-optimized):
+Reminder — start ds4-server in another terminal (it needs the GPU + model; CORS + port 8080):
 
   cd $DS4_DIR
+  # AMD / ROCm (full residency — this box):
+  HSA_OVERRIDE_GFX_VERSION=11.0.0 LD_LIBRARY_PATH=/opt/rocm/lib ./ds4-server --rocm --ctx 32768 --cors --port 8080
+  # NVIDIA / CUDA (SSD streaming):
   DS4_CUDA_NO_DIRECT_IO=1 DS4_CUDA_KEEP_MODEL_PAGES=1 LD_LIBRARY_PATH=/usr/local/cuda/lib64 ./ds4-server --cuda --ssd-streaming --ctx 100000 --cors --port 8080
+  # easier: run ../ds4Service (auto-detects backend), or drop an executable ds4-server.sh in $DS4_DIR
   # first run after boot: cat $DS4_MODEL > /dev/null   (warm RAM)
 
 EOF

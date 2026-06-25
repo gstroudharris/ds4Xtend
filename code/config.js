@@ -26,13 +26,13 @@ window.DS4_CONFIG = {
   ],
 
   // Phase-1 placeholder telemetry so the right rail reads correctly before the
-  // sidecar exists. Replaced by live nvidia-smi/proc data in Phase 3.
+  // sidecar exists. Replaced by live rocm-smi/nvidia-smi/proc data in Phase 3.
   demo: {
     gpuName: "GPU",
     util: 41, peak: 62, temp: 38, powerDraw: 45, powerLimit: 370, smClock: 1920,
     vramUsed: 15.5, vramTotal: 24,
     ramUsed: 93, ramTotal: 126, modelWarm: 81, modelSize: 81,
-    backend: { backend: "cuda", ctx: 100000, streaming: "ssd-streaming",
-               expertCache: "auto (~512 experts)", noDirectIO: true, keepPages: true },
+    backend: { backend: "auto", ctx: 32768, streaming: "auto",
+               expertCache: "auto", noDirectIO: false, keepPages: false },
   },
 };

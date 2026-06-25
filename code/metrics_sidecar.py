@@ -103,7 +103,13 @@ def _amd_gpu():
     }
 
 
-def gpu_stats():
+def gpu_stats(backend=None):
+    """GPU sample, probing the launch backend's vendor first (the other is a fallback).
+    On an AMD/ROCm box nvidia-smi may exist but fail every call, so don't lead with it."""
+    if str(backend).lower() in ("rocm", "amd", "hip"):
+        return _amd_gpu() or _nvidia_gpu()
+    if str(backend).lower() in ("cuda", "nvidia"):
+        return _nvidia_gpu() or _amd_gpu()
     return _nvidia_gpu() or _amd_gpu()
 
 
@@ -234,7 +240,7 @@ class Handler(BaseHTTPRequestHandler):
             model = model_residency(self.model_path) if self.model_path else None
             sample = {
                 "ts": time.time(),
-                "gpu": gpu_stats(),
+                "gpu": gpu_stats(self.backend),
                 "ram": ram_stats(),
                 "disk": {"read_mb_s": disk_read_rate()},
                 "backend": self.backend,

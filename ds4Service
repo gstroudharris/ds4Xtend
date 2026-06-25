@@ -14,10 +14,19 @@
 #   6. On Ctrl+C, stops everything it started, announcing each one.
 #
 # Ports/context via env: DS4_SERVER_PORT DS4_SIDE_PORT DS4_WEB_PORT DS4_CTX.  Skip warm: DS4_NO_WARM=1.
-# Hardware-agnostic: the GPU backend is auto-detected (nvidia-smi->cuda, rocm-smi->rocm, else cpu).
+# Hardware-agnostic: the GPU backend is auto-detected by what actually works — a real AMD GPU
+#   (/dev/kfd + ROCm) -> rocm, else a responding nvidia-smi -> cuda, else cpu. (E.g. an AMD Radeon
+#   780M / gfx1103 box resolves to rocm + HSA_OVERRIDE_GFX_VERSION=11.0.0 + full residency.)
 #   Override per box:  --ds4-flags "--rocm --ssd-streaming"   (also DS4_SERVER_FLAGS / DS4_BACKEND /
 #   DS4_SERVER_ENV / DS4_LD_PATH, or a sourced ~/.config/ds4service/profile). Env is inherited, e.g.
-#   HSA_OVERRIDE_GFX_VERSION=11.0.0 ./ds4Service       (--cors/--port/--ctx are always added by us.)
+#   HSA_OVERRIDE_GFX_VERSION=11.0.0 ./ds4Service   (--cors/--port always added by us; --ctx too, unless
+#   a launch script owns it — see next).
+# Per-machine launch script (optional, like ds4/run.sh): if $DS4_DIR/ds4-server.sh is executable AND
+#   you pass no explicit flags, ds4Service runs it instead of composing ./ds4-server — the script owns
+#   backend/env/model/ctx (ideal for per-box memory limits) and we append only --cors --port. Set the
+#   path via DS4_SERVER_SCRIPT (abs or rel to the ds4 dir); force the built-in with DS4_NO_SERVER_SCRIPT=1.
+#   Precedence: --ds4-flags > DS4_SERVER_FLAGS > ds4-server.sh > auto-detect. The script must forward
+#   "$@" (so our --port wins). Note: the model-warm gauge still tracks ds4flash.gguf.
 # Re-run setup (change the dir): --setup
 # Browser: opens the dashboard in a window it OWNS (Chrome/Chromium --app, else a separate
 # Firefox instance) so Ctrl+C closes just the dashboard, not your other tabs. DS4_NO_BROWSER=1
@@ -37,7 +46,7 @@ SERVER_PORT="${DS4_SERVER_PORT:-8080}"
 SIDE_PORT="${DS4_SIDE_PORT:-8081}"
 AGENT_PORT="${DS4_AGENT_PORT:-8082}"
 WEB_PORT="${DS4_WEB_PORT:-8090}"
-SERVER_CTX="${DS4_CTX:-100000}"
+SERVER_CTX="${DS4_CTX:-}"   # per-backend default resolved after detection (full-residency ROCm needs a smaller ctx than CUDA streaming)
 
 # ---------- pretty output ----------
 if [ -t 1 ]; then
@@ -228,7 +237,7 @@ chmod +x "$SIDECAR" 2>/dev/null || true
 ok "ready: $SIDECAR"
 
 # ---------- 3. launch ds4-server ----------
-say "3. launching ds4-server (:$SERVER_PORT, ctx $SERVER_CTX)"
+say "3. launching ds4-server (:$SERVER_PORT)"
 preflight_ports "$SERVER_PORT:ds4-server" "$SIDE_PORT:sidecar" "$AGENT_PORT:agent-tools" "$WEB_PORT:frontend" || exit 1
 if [ "${DS4_NO_WARM:-0}" != "1" ]; then
   ( cat "$MODEL" >/dev/null 2>&1 ) & register "model-warm (cat)" "$!"
@@ -237,9 +246,14 @@ fi
 # --- backend profile: auto-detect, fully overridable (env inherited, --ds4-flags, profile file) ---
 PROFILE_FILE="$CONFIG_DIR/profile"
 [ -f "$PROFILE_FILE" ] && . "$PROFILE_FILE"     # optional: export HSA_*, set DS4_BACKEND / DS4_SERVER_FLAGS / DS4_SERVER_ENV / DS4_LD_PATH
+have_rocm() { command -v rocminfo >/dev/null 2>&1 || command -v rocm-smi >/dev/null 2>&1 || [ -d /opt/rocm ]; }
 detect_backend() {
-  command -v nvidia-smi >/dev/null 2>&1 && { echo cuda; return; }
-  { command -v rocm-smi >/dev/null 2>&1 || command -v rocminfo >/dev/null 2>&1 || [ -d /opt/rocm ]; } && { echo rocm; return; }
+  # A *working* GPU wins, not a merely-installed one. nvidia-smi can be a leftover binary with no
+  # usable driver (this AMD box has one — `nvidia-smi -L` fails), so a real AMD GPU (the /dev/kfd
+  # kernel node + ROCm present) takes priority, and CUDA is only chosen if nvidia-smi truly responds.
+  if [ -e /dev/kfd ] && have_rocm; then echo rocm; return; fi
+  if command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi -L >/dev/null 2>&1; then echo cuda; return; fi
+  have_rocm && { echo rocm; return; }
   echo cpu
 }
 FLAGS="${DS4_FLAGS_CLI:-${DS4_SERVER_FLAGS:-}}"   # precedence: --ds4-flags > $DS4_SERVER_FLAGS > per-backend default
@@ -252,28 +266,68 @@ if [ -z "$DS4_BACKEND" ]; then                    # infer from explicit flags, e
     *)            DS4_BACKEND="$(detect_backend)" ;;
   esac
 fi
+# DEFCTX: CUDA streams the model (not GPU-resident) so it has room for a huge context. Full-residency
+# ROCm keeps the whole 80.76 GiB model in the 104 GiB GTT, leaving only ~12-18 GiB — a 100k-token KV
+# cache OOMs there, so default to 32768 (the model's own default; matches ../ds4/run.sh). Override: DS4_CTX.
 case "$DS4_BACKEND" in
-  cuda) DEFENV="DS4_CUDA_NO_DIRECT_IO=1 DS4_CUDA_KEEP_MODEL_PAGES=1"; DEFLD="/usr/local/cuda/lib64"; AUTOFLAGS="--cuda --ssd-streaming" ;;
-  rocm) DEFENV=""; DEFLD="/opt/rocm/lib"; AUTOFLAGS="--rocm --ssd-streaming" ;;
-  cpu)  DEFENV=""; DEFLD=""; AUTOFLAGS="" ;;
-  *)    DEFENV=""; DEFLD=""; AUTOFLAGS="--$DS4_BACKEND --ssd-streaming" ;;
+  cuda) DEFENV="DS4_CUDA_NO_DIRECT_IO=1 DS4_CUDA_KEEP_MODEL_PAGES=1"; DEFLD="/usr/local/cuda/lib64"; AUTOFLAGS="--cuda --ssd-streaming"; DEFCTX=100000 ;;
+  # ROCm: HSA_OVERRIDE_GFX_VERSION=11.0.0 is REQUIRED on this gfx1103 iGPU (Radeon 780M) — rocBLAS
+  # ships no native gfx1103 kernels, so it runs as gfx1100. Full residency (no --ssd-streaming) is
+  # ~2.2× the decode here; streaming is the slow OOM fallback. See ../ds4/launchGuide.md.
+  rocm) DEFENV="HSA_OVERRIDE_GFX_VERSION=11.0.0"; DEFLD="/opt/rocm/lib"; AUTOFLAGS="--rocm"; DEFCTX=32768 ;;
+  cpu)  DEFENV=""; DEFLD=""; AUTOFLAGS=""; DEFCTX=32768 ;;
+  *)    DEFENV=""; DEFLD=""; AUTOFLAGS="--$DS4_BACKEND --ssd-streaming"; DEFCTX=32768 ;;
 esac
+# --- optional per-machine launch script (e.g. per-box ctx/memory tuning, like ds4/run.sh) ---
+# If $DS4_DIR/ds4-server.sh (override: DS4_SERVER_SCRIPT) is executable and NO explicit flags were
+# given, delegate the launch to it (it owns backend/env/model/ctx; we append only --cors --port).
+# Tested BEFORE the AUTOFLAGS fill below, so [ -n "$FLAGS" ] here == "explicit flags were given".
+SERVER_SCRIPT=""; USE_SCRIPT=0
+if [ -n "$FLAGS" ]; then
+  :   # explicit --ds4-flags / DS4_SERVER_FLAGS win — keep the built-in composed launch
+elif [ "${DS4_NO_SERVER_SCRIPT:-0}" = "1" ]; then
+  :   # escape hatch — force the built-in path
+else
+  _ss="${DS4_SERVER_SCRIPT:-ds4-server.sh}"
+  case "$_ss" in /*) SERVER_SCRIPT="$_ss" ;; *) SERVER_SCRIPT="$DS4_DIR/$_ss" ;; esac
+  if [ -x "$SERVER_SCRIPT" ]; then
+    USE_SCRIPT=1
+    [ -n "${DS4_CTX:-}" ] && warn "DS4_CTX=$DS4_CTX ignored while delegating to $SERVER_SCRIPT (the script owns ctx)"
+  elif [ -e "$SERVER_SCRIPT" ]; then
+    warn "found $SERVER_SCRIPT but it is not executable — using the built-in launch (chmod +x it to enable)"; SERVER_SCRIPT=""
+  else
+    SERVER_SCRIPT=""        # absent: silent, this hook is opt-in
+  fi
+fi
 [ -z "$FLAGS" ] && FLAGS="$AUTOFLAGS"
 DS4_SERVER_ENV="${DS4_SERVER_ENV:-$DEFENV}"
 DS4_LD_PATH="${DS4_LD_PATH:-$DEFLD}"
-ok "backend: $DS4_BACKEND   ds4-server flags: ${FLAGS:-(none / cpu)}   (override: --ds4-flags / DS4_BACKEND / DS4_SERVER_ENV / DS4_LD_PATH)"
+SERVER_CTX="${SERVER_CTX:-$DEFCTX}"
+if [ "$USE_SCRIPT" = "1" ]; then
+  ok "launch: $SERVER_SCRIPT (per-machine script owns backend/env/model/ctx)   backend label (best-effort): $DS4_BACKEND   (we add only --cors --port $SERVER_PORT; bypass with --ds4-flags / DS4_NO_SERVER_SCRIPT=1)"
+else
+  ok "backend: $DS4_BACKEND   ds4-server flags: ${FLAGS:-(none / cpu)}   ctx: $SERVER_CTX   (override: --ds4-flags / DS4_BACKEND / DS4_CTX / DS4_SERVER_ENV / DS4_LD_PATH)"
+fi
 SERVER_LOG="$RUN_DIR/ds4-server.log"
-( cd "$DS4_DIR"
-  [ -n "$DS4_LD_PATH" ] && export LD_LIBRARY_PATH="$DS4_LD_PATH:${LD_LIBRARY_PATH:-}"
-  for kv in $DS4_SERVER_ENV; do export "$kv"; done
-  exec ./ds4-server $FLAGS --ctx "$SERVER_CTX" --cors --port "$SERVER_PORT"
-) > "$SERVER_LOG" 2>&1 &
+if [ "$USE_SCRIPT" = "1" ]; then
+  # Delegate: the script owns backend/env/model/ctx. We append ONLY the non-negotiables --cors --port
+  # (no LD_LIBRARY_PATH / DS4_SERVER_ENV / --ctx here — those are the script's responsibility).
+  ( cd "$DS4_DIR"; exec "$SERVER_SCRIPT" --cors --port "$SERVER_PORT" ) > "$SERVER_LOG" 2>&1 &
+else
+  ( cd "$DS4_DIR"
+    [ -n "$DS4_LD_PATH" ] && export LD_LIBRARY_PATH="$DS4_LD_PATH:${LD_LIBRARY_PATH:-}"
+    for kv in $DS4_SERVER_ENV; do export "$kv"; done
+    exec ./ds4-server $FLAGS --ctx "$SERVER_CTX" --cors --port "$SERVER_PORT"
+  ) > "$SERVER_LOG" 2>&1 &
+fi
 register "ds4-server" "$!"
 printf '    waiting for model load '
 if wait_http "http://127.0.0.1:$SERVER_PORT/v1/models" 180; then
   printf '\n'; ok "ds4-server online"
 else
-  printf '\n'; errln "ds4-server did not come up — last log lines:"; tail -n 18 "$SERVER_LOG" >&2; cleanup
+  printf '\n'; errln "ds4-server did not come up — last log lines:"; tail -n 18 "$SERVER_LOG" >&2
+  [ "$USE_SCRIPT" = "1" ] && errln "used launch script $SERVER_SCRIPT — it MUST forward \"\$@\" to ds4-server and honor --port. Test directly: \"$SERVER_SCRIPT\" --cors --port $SERVER_PORT"
+  cleanup
 fi
 
 # ---------- 4. sidecar + frontend ----------
