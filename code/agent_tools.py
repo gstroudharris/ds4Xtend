@@ -71,7 +71,7 @@ def t_list_dir(rel):
     return {"path": rel or "", "entries": out}
 
 
-def t_read_file(rel):
+def t_read_file(rel, offset=0, limit=None):
     p = safe_path(rel)
     if not os.path.isfile(p):
         raise FileNotFoundError("not a file: %s" % rel)
@@ -79,9 +79,25 @@ def t_read_file(rel):
         raise ValueError("file too large (>%d bytes)" % MAX_BYTES)
     data = open(p, "rb").read()
     try:
-        return {"path": rel, "content": data.decode("utf-8")}
+        text = data.decode("utf-8")
     except UnicodeDecodeError:
         raise ValueError("file is not UTF-8 text")
+    try:
+        offset = max(0, int(offset or 0))
+    except (TypeError, ValueError):
+        offset = 0
+    try:
+        limit = int(limit) if limit not in (None, "") else None
+    except (TypeError, ValueError):
+        limit = None
+    if offset == 0 and limit is None:
+        return {"path": rel, "content": text}
+    lines = text.splitlines()
+    total = len(lines)
+    end = total if limit is None else min(total, offset + max(0, limit))
+    return {"path": rel, "content": chr(10).join(lines[offset:end]), "offset": offset,
+            "lines_returned": max(0, end - offset), "total_lines": total,
+            "truncated": (end < total or offset > 0)}
 
 
 def t_write_file(rel, content):
@@ -271,7 +287,7 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/tools/list_dir":
                 return self._json(t_list_dir(b.get("path", "")))
             if path == "/tools/read_file":
-                return self._json(t_read_file(b.get("path", "")))
+                return self._json(t_read_file(b.get("path", ""), b.get("offset"), b.get("limit")))
             if path == "/tools/write_file":
                 return self._json(t_write_file(b.get("path", ""), b.get("content", "")))
             if path == "/tools/search":

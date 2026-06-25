@@ -18,7 +18,7 @@
   const agentPanel = $("agentPanel");
   const agentMessagesEl = $("agentMessages");
   let mode = "chat";
-  let workspace = null, agentMode = "ask", agentMsgs = [], agentBusy = false, agentAbort = null;
+  let workspace = null, agentMode = "ask", agentMsgs = [], agentBusy = false, agentAbort = null, pendingApproval = null, agentRunId = 0;
 
   (C.suggestions || []).forEach((s) => {
     const el = document.createElement("button");
@@ -83,7 +83,8 @@
   $("sendBtn").addEventListener("click", () => { if (streaming || agentBusy || looping) return stopLoop(); if (loopMode && mode === "agent") return startLoop(); send(); });
   $("clearBtn").addEventListener("click", () => {
     if (mode === "agent") {                       // Clear only the active mode's conversation
-      if (agentBusy) stopAgent();
+      if (agentBusy) { stopAgent(); agentBusy = false; setSendStop(false); }   // unblock a pending approval + the loop
+      agentRunId++;                               // invalidate any in-flight run so it can't write back over the cleared state
       resetLog("agent"); agentMsgs = []; agentMessagesEl.innerHTML = ""; saveAgent(); $("agentEmpty").hidden = false;
     } else {
       if (streaming) stop();
@@ -181,19 +182,26 @@
     beginLiveMetrics();
     const liveTimer = setInterval(() => renderLiveMetrics({ t0, tFirst, outTokEst, estPrompt }), 150);
     abortCtrl = new AbortController();
-    const mt = maxTokensFor(estPrompt);
     try {
-      const res = await fetch(C.serverUrl + "/v1/chat/completions", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        signal: abortCtrl.signal,
-        body: JSON.stringify({
-          model: C.model, stream: true, stream_options: { include_usage: true },
-          messages, ...(thinkingOn ? {} : { thinking: { type: "disabled" } }),
-          ...(mt ? { max_tokens: mt } : {}),
-        }),
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status} — ${(await res.text()).slice(0, 180)}`);
+      let res, level = 0;
+      for (;;) {
+        const sendMsgs = fitForSend(null, messages, { level: level, protectFirst: false });   // trim to fit --ctx
+        const mt = maxTokensFor(sumTok(sendMsgs));
+        res = await fetch(C.serverUrl + "/v1/chat/completions", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          signal: abortCtrl.signal,
+          body: JSON.stringify({
+            model: C.model, stream: true, stream_options: { include_usage: true },
+            messages: sendMsgs, ...(thinkingOn ? {} : { thinking: { type: "disabled" } }),
+            ...(mt ? { max_tokens: mt } : {}),
+          }),
+        });
+        if (res.ok) break;
+        const errTxt = await res.text();
+        if (res.status === 400 && /context|too long|exceed|maximum/i.test(errTxt) && level < 2) { learnCtxFromError(errTxt); level++; continue; }
+        throw new Error("HTTP " + res.status + " - " + errTxt.slice(0, 180));
+      }
       const reader = res.body.getReader();
       const dec = new TextDecoder();
       let buf = "";
@@ -343,6 +351,10 @@
   let serverCtx = null;          // ds4-server --ctx, learned live from the sidecar (m.ctx)
   let lastCtxUsed = null;        // last measured occupancy, so we can re-render if ctx arrives late
   function currentCtx() { return serverCtx || C.serverCtx || null; }
+  function learnCtxFromError(txt) {                          // discover the server's ctx from a 400 so trimming self-heals on any box
+    const m = /context[^0-9]{0,40}([0-9]{3,})/i.exec(txt || "");
+    if (m) { const n = parseInt(m[1], 10); if (n > 256 && n !== serverCtx) { serverCtx = n; if (lastCtxUsed != null) updateContextMeter(lastCtxUsed, false); } }
+  }
   function fmtTok(n) { n = Math.max(0, Math.round(n || 0)); return n >= 1000 ? (n / 1000).toFixed(n >= 10000 ? 0 : 1) + "k" : String(n); }
   function updateContextMeter(used, live) {
     const txt = $("ctxTxt"), fill = $("ctxFill"), note = $("ctxNote");
@@ -371,6 +383,90 @@
     const ctx = currentCtx(), full = ctx ? used >= ctx * 0.98 : false;
     if (full) { ui.notice("Reply cut off — context window full. Clear to start a fresh run.", true); toast("Context window full — Clear to start a fresh run."); }
     else { ui.notice("Reply cut off at the output-length cap (max_tokens).", false); toast("Reply hit the output-length cap."); }
+  }
+
+  /* ---------------- context fitting + agent message queue (keeps long sessions under --ctx) ---------------- */
+  const NL2 = String.fromCharCode(10);
+  function tokOf(m) {
+    let n = (m.content || "").length;
+    if (m.tool_calls) for (const tc of m.tool_calls) { const f = tc.function || {}; n += (f.arguments || "").length + (f.name || "").length; }
+    return Math.ceil(n / 4) + 4;
+  }
+  function sumTok(msgs) { let n = 0; for (const m of msgs) n += tokOf(m); return n; }
+  function stubText(s, keepChars) {
+    if (!s || s.length <= keepChars) return s;
+    const head = Math.ceil(keepChars * 0.6), tail = Math.max(0, keepChars - head);
+    const cut = s.length - head - tail;
+    return s.slice(0, head) + NL2 + "... [" + cut + " chars trimmed to fit the context window - re-read this file/range with read_file offset+limit to restore detail] ..." + NL2 + (tail ? s.slice(s.length - tail) : "");
+  }
+  function wireMsg(m) {
+    const o = { role: m.role };
+    if (m.content != null) o.content = m.content;
+    if (m.tool_calls) o.tool_calls = m.tool_calls;
+    if (m.tool_call_id) o.tool_call_id = m.tool_call_id;
+    return o;
+  }
+  // Budget-fitted COPY of msgs (the full history stays in memory/display/log). level escalates on 400-retry.
+  function fitForSend(systemContent, msgs, opts) {
+    opts = opts || {};
+    const level = opts.level || 0, protectFirst = opts.protectFirst !== false;
+    const ctx = currentCtx();
+    let out = msgs.map(wireMsg);
+    if (!ctx) return out;                                  // ctx unknown -> can't fit; rely on the 400-retry
+    const reserve = (C.contextReserveTokens || 2048) + level * 1024;
+    const safety = (C.contextSafety || 0.9) - level * 0.06;
+    const sysTok = Math.ceil((systemContent || "").length / 4) + 4;
+    const budget = Math.max(512, Math.floor((ctx - reserve) * safety) - sysTok);
+    if (sumTok(out) <= budget) return out;
+    const recentKeep = Math.max(2, (C.contextRecentKeep || 6) - level * 2);
+    const tailStart = Math.max(0, out.length - recentKeep);
+    const stubChars = Math.max(160, (C.contextStubChars || 800) - level * 300);
+    // Pass 1 - stub OLD tool results (oldest first, outside the protected recent tail)
+    for (let i = 0; i < tailStart && sumTok(out) > budget; i++) {
+      if (out[i].role === "tool" && out[i].content && out[i].content.length > stubChars)
+        out[i] = { role: "tool", tool_call_id: out[i].tool_call_id, content: stubText(out[i].content, stubChars) };
+    }
+    if (sumTok(out) <= budget) return out;
+    // Pass 2 - drop oldest coherent groups (cut only at user/assistant boundaries to keep tool pairing valid),
+    // keeping the optional first user message (task anchor) + a breadcrumb + the largest fitting suffix.
+    const firstUser = protectFirst ? out.findIndex((m) => m.role === "user") : -1;
+    const anchor = firstUser >= 0 ? [out[firstUser]] : [];
+    const breadcrumb = { role: "user", content: "[earlier conversation was trimmed to fit the context window]" };
+    for (let c = firstUser + 1; c < out.length; c++) {
+      if (out[c].role !== "user" && out[c].role !== "assistant") continue;   // cut only at clean boundaries (tool pairing)
+      const kept = anchor.concat([breadcrumb], out.slice(c));
+      if (sumTok(kept) <= budget) { out = kept; break; }
+    }
+    if (sumTok(out) <= budget) return out;
+    // Pass 3 - last-ditch: stub recent tool results too, then hard-cap any remaining giant message.
+    for (let i = 0; i < out.length && sumTok(out) > budget; i++) {
+      if (out[i].role === "tool" && out[i].content) out[i] = { role: "tool", tool_call_id: out[i].tool_call_id, content: stubText(out[i].content, stubChars) };
+    }
+    for (let i = 0; i < out.length && sumTok(out) > budget; i++) {
+      if (out[i].content && out[i].content.length > 400) out[i] = Object.assign({}, out[i], { content: stubText(out[i].content, 400) });
+    }
+    return out;
+  }
+  // Out-of-band messages delivered to the agent at the next turn boundary (non-destructive). Foundation for
+  // future human-in-the-loop: anything can call injectAgentMessage(); the loop delivers it before the next turn.
+  let pendingInject = [], nudgeState = 0;
+  function injectAgentMessage(content, role) { pendingInject.push({ role: role || "user", content: content }); }
+  function drainPending() {
+    if (!pendingInject.length) return;
+    for (const m of pendingInject) { agentMsgs.push(m); agUser(m.content); }
+    pendingInject = [];
+  }
+  function maybeNudge() {
+    const ctx = currentCtx(); if (!ctx) return;
+    const used = sumTok(agentMsgs) + Math.ceil(AGENT_SYSTEM.length / 4);
+    const pct = used / ctx, warn = C.contextWarnPct || 0.8, danger = C.contextDangerPct || 0.92;
+    if (pct >= danger && nudgeState < 2) {
+      nudgeState = 2;
+      injectAgentMessage("[automatic context notice] The context window is nearly full (~" + Math.round(pct * 100) + "%). Stop opening new files or running searches. Finish the current step now, then give the user a concise summary of what you did and what remains.");
+    } else if (pct >= warn && nudgeState < 1) {
+      nudgeState = 1;
+      injectAgentMessage("[automatic context notice] You have used ~" + Math.round(pct * 100) + "% of the available context. Start wrapping up: prefer finishing over exploring, avoid large reads, and summarize soon.");
+    }
   }
 
   /* ---------------- minimal markdown (safe %%CB<n>%% code placeholder) ---------------- */
@@ -419,11 +515,14 @@
     "You are DS4, a coding agent working inside one locked project folder. Use the provided tools to " +
     "inspect and modify files. All paths are relative to the workspace root (use '.' for the root); you " +
     "cannot access anything outside it. Prefer edit_file for small changes; read or search before " +
-    "editing. When writing a file, provide its full new contents. When done, briefly summarize your changes.";
+    "editing. When writing a file, provide its full new contents. When done, briefly summarize your changes. " +
+    "Context is limited: read large files in ranges with read_file offset/limit instead of whole, and note that " +
+    "older tool outputs may be trimmed to fit - re-read the specific range you need. If you get an automatic " +
+    "context notice, wrap up and summarize promptly.";
 
   const TOOLS = [
     { type: "function", function: { name: "list_dir", description: "List files and folders in a directory.", parameters: { type: "object", properties: { path: { type: "string" } }, required: ["path"] } } },
-    { type: "function", function: { name: "read_file", description: "Read a text file.", parameters: { type: "object", properties: { path: { type: "string" } }, required: ["path"] } } },
+    { type: "function", function: { name: "read_file", description: "Read a text file. Optional 0-based line range offset+limit pages through large files; older tool outputs may be trimmed from context, so re-read a specific range when you need detail again.", parameters: { type: "object", properties: { path: { type: "string" }, offset: { type: "integer", description: "0-based first line to return (optional)." }, limit: { type: "integer", description: "Max lines to return from offset (optional)." } }, required: ["path"] } } },
     { type: "function", function: { name: "search", description: "Search file contents for a substring.", parameters: { type: "object", properties: { query: { type: "string" }, path: { type: "string", description: "Optional subdirectory to limit the search." } }, required: ["query"] } } },
     { type: "function", function: { name: "write_file", description: "Create or overwrite a text file with full new contents.", parameters: { type: "object", properties: { path: { type: "string" }, content: { type: "string" } }, required: ["path", "content"] } } },
     { type: "function", function: { name: "edit_file", description: "Find-and-replace in a text file (replaces every occurrence of 'find' with 'replace').", parameters: { type: "object", properties: { path: { type: "string" }, find: { type: "string" }, replace: { type: "string" } }, required: ["path", "find", "replace"] } } },
@@ -538,10 +637,15 @@
     amToggle.querySelectorAll(".seg2__btn").forEach((x) => x.classList.toggle("is-active", x.dataset.am === agentMode));
   }));
 
-  function stopAgent() { if (agentAbort) agentAbort.abort(); }
+  function stopAgent() { if (agentAbort) agentAbort.abort(); if (pendingApproval) { const p = pendingApproval; pendingApproval = null; p.resolve(false); } }
 
   /* ----- agent rendering ----- */
   function agScroll(force) { scrollDown(force); }
+  function scrollApprovalIntoView(el) {                       // Follow should reveal the approve buttons, even past inner scroll caps
+    if (!stick) return;
+    agScroll(true);
+    requestAnimationFrame(() => { try { if (el) el.scrollIntoView({ block: "end" }); } catch (e) {} agScroll(true); });
+  }
   function agUser(text) { const e = document.createElement("div"); e.className = "msg msg--user"; e.textContent = text; agentMessagesEl.appendChild(e); agScroll(true); }
   function agAssistant() {
     const root = document.createElement("div"); root.className = "msg msg--assistant";
@@ -624,9 +728,11 @@
       box.querySelector(".approve__head").textContent = title;
       const bodyEl = box.querySelector(".approve__body");
       if (body) { bodyEl.textContent = body.length > 4000 ? body.slice(0, 4000) + " …(truncated preview)" : body; } else { bodyEl.remove(); }
-      agentMessagesEl.appendChild(box); agScroll();
-      box.querySelector(".approve__yes").addEventListener("click", () => { box.remove(); resolve(true); });
-      box.querySelector(".approve__no").addEventListener("click", () => { box.remove(); resolve(false); });
+      agentMessagesEl.appendChild(box); scrollApprovalIntoView(box);
+      const done = (v) => { pendingApproval = null; box.remove(); resolve(v); };
+      pendingApproval = { resolve: done };               // so Stop/Clear can unblock this
+      box.querySelector(".approve__yes").addEventListener("click", () => done(true));
+      box.querySelector(".approve__no").addEventListener("click", () => done(false));
     });
   }
   async function approvalFor(name, args) {
@@ -646,13 +752,14 @@
     if (name === "delete") return { title: "Delete " + args.path, body: "This permanently removes it from the workspace." };
     return { title: name, body: JSON.stringify(args) };
   }
-  async function execToolCall(name, args, card) {
+  async function execToolCall(name, args, card, ac) {
     if (MUTATING[name] && agentMode === "ask") {
       let ok;
       if (card.approve) ok = await card.approve((name === "edit_file" ? "edit to " : "write to ") + args.path);  // inline on the live preview
       else { const a = await approvalFor(name, args); ok = await askConfirm(a.title, a.body); }
       if (!ok) { card.result({ error: "declined by user" }, "skip"); return { error: "user declined the " + name }; }
     }
+    if (ac && ac.signal.aborted) { card.result({ error: "stopped by user" }, "skip"); return { error: "stopped by user" }; }   // Stop pressed during approval
     const res = await callTool(name, args);
     let display = res;
     if (!(res && res.error)) {
@@ -727,9 +834,12 @@
         const no = document.createElement("button"); no.className = "btn btn--ghost"; no.type = "button"; no.textContent = "Decline";
         const yes = document.createElement("button"); yes.className = "btn btn--primary"; yes.type = "button"; yes.textContent = "Approve";
         actions.append(q, no, yes);
+        scrollApprovalIntoView(actions);                 // Follow: bring the Approve/Decline buttons into view
         return new Promise((resolve) => {
-          yes.addEventListener("click", () => { actions.hidden = true; resolve(true); });
-          no.addEventListener("click", () => { actions.hidden = true; resolve(false); });
+          const done = (v) => { pendingApproval = null; actions.hidden = true; resolve(v); };
+          pendingApproval = { resolve: done };           // so Stop/Clear can unblock this
+          yes.addEventListener("click", () => done(true));
+          no.addEventListener("click", () => done(false));
         });
       },
       result(res, kind) {
@@ -741,7 +851,7 @@
     };
   }
 
-  async function agentStreamTurn() {
+  async function agentStreamTurn(ac) {
     const ui = agAssistant();
     let content = "", reasoning = "", tcs = [], previews = {}, tFirst = null, outTok = 0, usage = null, finishReason = null;
     const t0 = performance.now();
@@ -749,12 +859,19 @@
     beginLiveMetrics();
     const liveTimer = setInterval(() => renderLiveMetrics({ t0, tFirst, outTokEst: outTok, estPrompt }), 150);   // live rail tiles during agent turns
     try {
-    const mtA = maxTokensFor(estPrompt);
-    const res = await fetch(C.serverUrl + "/v1/chat/completions", {
-      method: "POST", headers: { "Content-Type": "application/json" }, signal: agentAbort.signal,
-      body: JSON.stringify({ model: C.model, stream: true, stream_options: { include_usage: true }, tools: TOOLS, tool_choice: "auto", messages: [{ role: "system", content: AGENT_SYSTEM }, ...agentMsgs], ...(thinkingOn ? {} : { thinking: { type: "disabled" } }), ...(mtA ? { max_tokens: mtA } : {}) }),
-    });
-    if (!res.ok) throw new Error(`HTTP ${res.status} — ${(await res.text()).slice(0, 180)}`);
+    let res, level = 0;
+    for (;;) {
+      const sendMsgs = fitForSend(AGENT_SYSTEM, agentMsgs, { level: level, protectFirst: true });   // trim to fit --ctx
+      const mtA = maxTokensFor(sumTok(sendMsgs) + Math.ceil(AGENT_SYSTEM.length / 4));
+      res = await fetch(C.serverUrl + "/v1/chat/completions", {
+        method: "POST", headers: { "Content-Type": "application/json" }, signal: ac.signal,
+        body: JSON.stringify({ model: C.model, stream: true, stream_options: { include_usage: true }, tools: TOOLS, tool_choice: "auto", messages: [{ role: "system", content: AGENT_SYSTEM }].concat(sendMsgs), ...(thinkingOn ? {} : { thinking: { type: "disabled" } }), ...(mtA ? { max_tokens: mtA } : {}) }),
+      });
+      if (res.ok) break;
+      const errTxt = await res.text();
+      if (res.status === 400 && /context|too long|exceed|maximum/i.test(errTxt) && level < 2) { learnCtxFromError(errTxt); level++; continue; }   // learn ctx + compact harder + retry
+      throw new Error("HTTP " + res.status + " - " + errTxt.slice(0, 180));
+    }
     const reader = res.body.getReader(), dec = new TextDecoder(); let buf = "";
     for (;;) {
       const { value, done } = await reader.read(); if (done) break;
@@ -799,13 +916,19 @@
 
   async function runAgent(text) {
     if (!workspace) { toast("Choose a folder for the agent first."); $("agentPick").click(); return; }
+    const myRun = ++agentRunId;                        // tag this run so Clear/supersede can invalidate it
+    const ac = new AbortController(); agentAbort = ac;  // local handle so Stop/Clear can't NPE the loop
     agentBusy = true; setSendStop(true); agentEmpty.hidden = true;
     agUser(text); agentMsgs.push({ role: "user", content: text });
-    agentAbort = new AbortController();
+    nudgeState = 0;                                   // re-evaluate context nudges for this run
     try {
       let guard = 0;
       while (guard++ < 25) {
-        const turn = await agentStreamTurn();
+        if (ac.signal.aborted) break;                 // Stop pressed
+        maybeNudge();                                 // enqueue a wrap-up notice if the context is filling
+        drainPending();                               // deliver queued out-of-band messages at this turn boundary
+        const turn = await agentStreamTurn(ac);
+        if (agentRunId !== myRun) return;             // Cleared/superseded mid-turn -> don't write back
         const asg = { role: "assistant", content: turn.content || "" };
         if (turn.toolCalls.length) asg.tool_calls = turn.toolCalls.map((tc) => ({ id: tc.id, type: "function", function: { name: tc.name, arguments: tc.args } }));
         agentMsgs.push(asg);
@@ -813,15 +936,18 @@
         for (const tc of turn.toolCalls) {
           let args = {}; try { args = JSON.parse(tc.args || "{}"); } catch { args = {}; }
           const card = tc.preview || agToolCard(tc.name, args);
-          const res = await execToolCall(tc.name, args, card);
+          let res;
+          if (ac.signal.aborted) { res = { error: "stopped by user" }; if (card && card.result) card.result(res, "skip"); }   // pair every tool_call, even after Stop
+          else res = await execToolCall(tc.name, args, card, ac);
+          if (agentRunId !== myRun) return;
           agentMsgs.push({ role: "tool", tool_call_id: tc.id, content: JSON.stringify(res).slice(0, 100000) });
         }
+        if (ac.signal.aborted) break;
       }
     } catch (e) {
-      if (e.name !== "AbortError") { agError(String(e.message || e)); loopErrored = true; }
+      if (e.name !== "AbortError" && agentRunId === myRun) { agError(String(e.message || e)); loopErrored = true; }
     } finally {
-      agentBusy = false; setSendStop(false); agentAbort = null;
-      saveAgent(); logFinishTurn("agent");
+      if (agentRunId === myRun) { agentBusy = false; setSendStop(false); agentAbort = null; saveAgent(); logFinishTurn("agent"); }
     }
   }
 

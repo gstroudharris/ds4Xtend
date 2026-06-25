@@ -13,6 +13,19 @@ window.DS4_CONFIG = {
     maxHistoryChars: 4000000,            // per conversation kept in RAM (~8 MB UTF-16); older messages are
                                          // appended to the log file and dropped from memory past this.
   },
+
+  // Context-window management — prevents HTTP 400 "context_length_exceeded" on long (esp. agent) sessions.
+  // serverCtx is learned live from the sidecar; the rest tune how the conversation is trimmed to fit BEFORE
+  // sending (and the frontend auto-retries harder if the server still 400s). Everything scales to the live ctx.
+  contextReserveTokens: 2048,   // tokens held back for the model's reply
+  contextSafety: 0.9,           // fraction of (ctx - reserve) the input may use (absorbs token-estimate error)
+  contextRecentKeep: 6,         // newest messages never dropped (only stubbed as a last resort)
+  contextStubChars: 800,        // size OLD tool outputs are trimmed to (head+tail) + a re-read hint
+  contextWarnPct: 0.80,         // agent gets a "wrap up" notice at this fill
+  contextDangerPct: 0.92,       // agent gets a stronger "stop exploring" notice at this fill
+  // maxOutputTokens: 2048,     // optional hard output cap (default: omit -> server default, auto-clamped to fit)
+  // serverCtx: 32768,          // fallback only if the sidecar can't report --ctx
+
   model:  "deepseek-v4-flash",
   quant:  "q2-imatrix",                  // your model variant — shown in the header
   hardware: "",                          // leave blank: GPU name + backend are auto-detected live by the sidecar
