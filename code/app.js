@@ -156,6 +156,7 @@
       stream(t) { thinkCur.hidden = true; tT.flush(); bodyCur.hidden = false; bT.feed(t); },
       finalize(content) { tT.finish(); bT.finish(); thinkCur.remove(); bodyCur.remove(); body.classList.remove("is-streaming"); body.innerHTML = mdRender(content); addCopy(body); think.open = false; },
       meta(s) { meta.hidden = false; meta.textContent = s; },
+      notice(text, full) { const n = document.createElement("div"); n.className = "msg__warn" + (full ? " msg__warn--full" : ""); n.textContent = "⚠ " + text; root.appendChild(n); scrollDown(); },
       error(msg) { tT.finish(); bT.finish(); thinkCur.remove(); bodyCur.remove(); root.classList.add("msg--error"); body.classList.remove("is-streaming"); body.textContent = "⚠ " + msg; },
     };
   }
@@ -174,12 +175,13 @@
     streaming = true; setSendStop(true);
     const ui = appendAssistant();
     const t0 = performance.now();
-    let tFirst = null, content = "", reasoning = "", usage = null;
+    let tFirst = null, content = "", reasoning = "", usage = null, finishReason = null;
     let outTokEst = 0;
     const estPrompt = estimateTokens(messages);
     beginLiveMetrics();
     const liveTimer = setInterval(() => renderLiveMetrics({ t0, tFirst, outTokEst, estPrompt }), 150);
     abortCtrl = new AbortController();
+    const mt = maxTokensFor(estPrompt);
     try {
       const res = await fetch(C.serverUrl + "/v1/chat/completions", {
         method: "POST",
@@ -188,6 +190,7 @@
         body: JSON.stringify({
           model: C.model, stream: true, stream_options: { include_usage: true },
           messages, ...(thinkingOn ? {} : { thinking: { type: "disabled" } }),
+          ...(mt ? { max_tokens: mt } : {}),
         }),
       });
       if (!res.ok) throw new Error(`HTTP ${res.status} — ${(await res.text()).slice(0, 180)}`);
@@ -206,6 +209,7 @@
           if (data === "[DONE]") continue;
           let j; try { j = JSON.parse(data); } catch { continue; }
           if (j.usage) usage = j.usage;
+          const fr = j.choices && j.choices[0] && j.choices[0].finish_reason; if (fr) finishReason = fr;
           const d = (j.choices && j.choices[0] && j.choices[0].delta) || {};
           if (d.reasoning_content) { if (tFirst === null) tFirst = performance.now(); reasoning += d.reasoning_content; outTokEst++; ui.thinking(reasoning); }
           if (d.content) { if (tFirst === null) tFirst = performance.now(); content += d.content; outTokEst++; ui.stream(content); }
@@ -219,12 +223,13 @@
       ui.finalize(content);
       messages.push({ role: "assistant", content });
       const tEnd = performance.now();
-      finalizeTurnMetrics({ t0, tFirst, tEnd, usage, outTokEst, estPrompt });
+      const usedTok = finalizeTurnMetrics({ t0, tFirst, tEnd, usage, outTokEst, estPrompt });
       if (usage) {
         const decSecs = (tEnd - (tFirst == null ? tEnd : tFirst)) / 1000;
         const tps = usage.completion_tokens && decSecs > 0 ? (usage.completion_tokens / decSecs).toFixed(1) : "?";
         ui.meta(`${tps} t/s · ${usage.completion_tokens == null ? "?" : usage.completion_tokens} tokens · ${((tEnd - t0) / 1000).toFixed(1)} s`);
       }
+      if (finishReason === "length") noticeTruncation(ui, usedTok);
     } catch (e) {
       if (e.name === "AbortError") { ui.finalize(content || "_(stopped)_"); finalizeTurnMetrics({ t0, tFirst, tEnd: performance.now(), usage, outTokEst, estPrompt }); }
       else { ui.error(String(e.message || e)); loopErrored = true; }
@@ -310,6 +315,7 @@
       const dsec = (now - tFirst) / 1000;
       if (dsec > 0.25) setTile("mDecode", "~" + (outTokEst / dsec).toFixed(1) + " t/s", true);
     }
+    updateContextMeter(estPrompt + outTokEst, true);
   }
   function finalizeTurnMetrics({ t0, tFirst, tEnd, usage, outTokEst, estPrompt }) {
     const ttft = tFirst != null ? (tFirst - t0) / 1000 : null;
@@ -322,9 +328,49 @@
     setTile("mDecode", (ot && ttft != null && total - ttft > 0) ? (ot / (total - ttft)).toFixed(1) + " t/s" : "—", false);
     setTile("mPrompt", pt != null ? String(pt) : "—", false);
     setTile("mOutput", ot != null ? String(ot) : "—", false);
+    const used = (pt || 0) + (ot || 0);
+    updateContextMeter(used, false);
+    return used;
   }
   function resetTurnMetrics() {
     TURN_IDS.forEach((id) => { const e = $(id); e.textContent = "—"; e.classList.add("is-empty"); e.classList.remove("is-live"); });
+    lastCtxUsed = null;
+    const t = $("ctxTxt"), f = $("ctxFill"), n = $("ctxNote");
+    if (t) { t.textContent = "—"; f.style.width = "0%"; f.className = "bar__fill bar__fill--accent"; n.textContent = "no turns yet"; }
+  }
+
+  /* ---------------- context-window headroom ---------------- */
+  let serverCtx = null;          // ds4-server --ctx, learned live from the sidecar (m.ctx)
+  let lastCtxUsed = null;        // last measured occupancy, so we can re-render if ctx arrives late
+  function currentCtx() { return serverCtx || C.serverCtx || null; }
+  function fmtTok(n) { n = Math.max(0, Math.round(n || 0)); return n >= 1000 ? (n / 1000).toFixed(n >= 10000 ? 0 : 1) + "k" : String(n); }
+  function updateContextMeter(used, live) {
+    const txt = $("ctxTxt"), fill = $("ctxFill"), note = $("ctxNote");
+    if (!txt) return;
+    lastCtxUsed = used = Math.max(0, Math.round(used || 0));
+    const ctx = currentCtx(), pre = live ? "~" : "";
+    if (!ctx) { txt.textContent = pre + fmtTok(used) + " tok"; fill.style.width = "0%"; note.textContent = "ctx unknown — set serverCtx in config.js"; return; }
+    const pct = Math.min(100, used / ctx * 100);
+    const warn = (C.contextWarnPct || 0.8) * 100, danger = (C.contextDangerPct || 0.92) * 100;
+    txt.textContent = pre + fmtTok(used) + " / " + fmtTok(ctx) + " · " + Math.round(pct) + "%";
+    fill.style.width = pct + "%";
+    fill.className = "bar__fill " + (pct >= danger ? "bar__fill--danger" : pct >= warn ? "bar__fill--warn" : "bar__fill--accent");
+    note.textContent = "≈" + fmtTok(Math.max(0, ctx - used)) + " tokens left" + (pct >= danger ? " — start a fresh run soon" : "");
+  }
+  // Opt-in output cap (C.maxOutputTokens), always clamped to remaining context so we never start a
+  // generation that would instantly overflow. Returns null (→ omit max_tokens, today's behavior) when unset.
+  function maxTokensFor(estPrompt) {
+    if (!C.maxOutputTokens) return null;
+    let mt = C.maxOutputTokens;
+    const ctx = currentCtx();
+    if (ctx) mt = Math.min(mt, ctx - estPrompt - 64);
+    return Math.max(16, Math.floor(mt));
+  }
+  // Inline notice when the server stopped at a hard limit (finish_reason === "length").
+  function noticeTruncation(ui, used) {
+    const ctx = currentCtx(), full = ctx ? used >= ctx * 0.98 : false;
+    if (full) { ui.notice("Reply cut off — context window full. Clear to start a fresh run.", true); toast("Context window full — Clear to start a fresh run."); }
+    else { ui.notice("Reply cut off at the output-length cap (max_tokens).", false); toast("Reply hit the output-length cap."); }
   }
 
   /* ---------------- minimal markdown (safe %%CB<n>%% code placeholder) ---------------- */
@@ -515,6 +561,7 @@
       thinking(t) { think.hidden = false; bodyCur.hidden = true; thinkCur.hidden = false; tT.feed(t); },
       stream(t) { thinkCur.hidden = true; tT.flush(); bodyCur.hidden = false; bT.feed(t); },
       cursorOff() { thinkCur.hidden = true; bodyCur.hidden = true; tT.flush(); bT.flush(); },   // tool/preview owns the cursor now
+      notice(text, full) { const n = document.createElement("div"); n.className = "msg__warn" + (full ? " msg__warn--full" : ""); n.textContent = "⚠ " + text; root.appendChild(n); agScroll(); },
       finalize(t) { tT.finish(); bT.finish(); thinkCur.remove(); bodyCur.remove(); body.classList.remove("is-streaming"); if (t) { body.innerHTML = mdRender(t); addCopy(body); } else { root.remove(); } think.open = false; },
     };
   }
@@ -696,15 +743,16 @@
 
   async function agentStreamTurn() {
     const ui = agAssistant();
-    let content = "", reasoning = "", tcs = [], previews = {}, tFirst = null, outTok = 0, usage = null;
+    let content = "", reasoning = "", tcs = [], previews = {}, tFirst = null, outTok = 0, usage = null, finishReason = null;
     const t0 = performance.now();
     const estPrompt = estimateTokens(agentMsgs);
     beginLiveMetrics();
     const liveTimer = setInterval(() => renderLiveMetrics({ t0, tFirst, outTokEst: outTok, estPrompt }), 150);   // live rail tiles during agent turns
     try {
+    const mtA = maxTokensFor(estPrompt);
     const res = await fetch(C.serverUrl + "/v1/chat/completions", {
       method: "POST", headers: { "Content-Type": "application/json" }, signal: agentAbort.signal,
-      body: JSON.stringify({ model: C.model, stream: true, stream_options: { include_usage: true }, tools: TOOLS, tool_choice: "auto", messages: [{ role: "system", content: AGENT_SYSTEM }, ...agentMsgs], ...(thinkingOn ? {} : { thinking: { type: "disabled" } }) }),
+      body: JSON.stringify({ model: C.model, stream: true, stream_options: { include_usage: true }, tools: TOOLS, tool_choice: "auto", messages: [{ role: "system", content: AGENT_SYSTEM }, ...agentMsgs], ...(thinkingOn ? {} : { thinking: { type: "disabled" } }), ...(mtA ? { max_tokens: mtA } : {}) }),
     });
     if (!res.ok) throw new Error(`HTTP ${res.status} — ${(await res.text()).slice(0, 180)}`);
     const reader = res.body.getReader(), dec = new TextDecoder(); let buf = "";
@@ -717,6 +765,7 @@
         const data = s.slice(5).trim(); if (data === "[DONE]") continue;
         let j; try { j = JSON.parse(data); } catch { continue; }
         if (j.usage) usage = j.usage;
+        const fr = j.choices && j.choices[0] && j.choices[0].finish_reason; if (fr) finishReason = fr;
         const d = (j.choices && j.choices[0] && j.choices[0].delta) || {};
         if (d.reasoning_content) { if (tFirst === null) tFirst = performance.now(); reasoning += d.reasoning_content; outTok++; ui.thinking(reasoning); }
         if (d.content) { if (tFirst === null) tFirst = performance.now(); content += d.content; outTok++; ui.stream(content); }
@@ -737,7 +786,8 @@
     } finally { clearInterval(liveTimer); }
     const tEnd = performance.now();
     ui.finalize(content);
-    finalizeTurnMetrics({ t0, tFirst, tEnd, usage, outTokEst: outTok, estPrompt });
+    const usedTok = finalizeTurnMetrics({ t0, tFirst, tEnd, usage, outTokEst: outTok, estPrompt });
+    if (finishReason === "length") noticeTruncation(ui, usedTok);
     if (content) {
       const decSecs = (tEnd - (tFirst == null ? tEnd : tFirst)) / 1000;
       const tps = usage && usage.completion_tokens && decSecs > 0 ? (usage.completion_tokens / decSecs).toFixed(1) : "?";
@@ -809,6 +859,20 @@
   if (window.ResizeObserver) new ResizeObserver(() => { resizeCanvas(); drawSpark(); }).observe(spark);
   resizeCanvas(); drawSpark();
 
+  let lastBackendJson = "";
+  function renderBackend(m) {
+    const dl = $("backendDl"); if (!dl) return;
+    const ctx = currentCtx();
+    const rows = [["Model", C.model || "—"]];
+    if (C.quant) rows.push(["Quant", C.quant]);
+    if (m.backend) rows.push(["Backend", String(m.backend).toUpperCase()]);
+    rows.push(["Context", ctx ? fmtTok(ctx) + " tokens" : "unknown"]);
+    if (m.gpu && m.gpu.name) rows.push(["GPU", m.gpu.name]);
+    if (m.model) { rows.push(["Model file", m.model.path]); rows.push(["Warm", m.model.warm_pct + "%"]); }
+    rows.push(["Sample", (C.pollHz || 2) + " Hz"]);
+    const j = JSON.stringify(rows); if (j === lastBackendJson) return; lastBackendJson = j;
+    dl.innerHTML = rows.map((r) => "<dt>" + esc(r[0]) + "</dt><dd>" + esc(String(r[1])) + "</dd>").join("");
+  }
   function applyMetrics(m) {
     if (m.gpu) {
       const gp = m.gpu;
@@ -827,6 +891,9 @@
     if (m.model) $("ramNote").innerHTML = `<span class="ok">●</span> model warm: ${(m.model.resident_mb / 1024).toFixed(0)} / ${(m.model.size_mb / 1024).toFixed(0)} GB (${m.model.warm_pct}%)`;
     if (m.disk) { const r = m.disk.read_mb_s || 0; $("diskNote").textContent = `expert stream (disk): ${r < 1 ? "idle (served from RAM)" : r.toFixed(0) + " MB/s"}`; }
     setText("sampleHz", (C.pollHz || 2) + " Hz");
+    if (m.ctx) serverCtx = m.ctx;
+    renderBackend(m);
+    if (lastCtxUsed != null && !streaming && !agentBusy) updateContextMeter(lastCtxUsed, false);   // re-render if ctx arrived after a turn
   }
   async function poll() {
     try {

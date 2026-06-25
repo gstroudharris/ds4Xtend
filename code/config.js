@@ -17,6 +17,14 @@ window.DS4_CONFIG = {
   quant:  "q2-imatrix",                  // your model variant — shown in the header
   hardware: "",                          // leave blank: GPU name + backend are auto-detected live by the sidecar
 
+  // Context window (the --ctx the server launched with). The sidecar reports it live for the headroom
+  // meter; ds4Service only knows it on the built-in launch path. If you use a per-box ds4-server.sh that
+  // owns --ctx, the sidecar can't report it — set serverCtx here so the meter still works.
+  serverCtx: null,                       // fallback ctx (tokens) when the sidecar doesn't report one
+  contextWarnPct: 0.8,                   // meter turns orange at/above this fraction of ctx
+  contextDangerPct: 0.92,                // meter turns red at/above this fraction (start a fresh run soon)
+  maxOutputTokens: null,                 // optional cap on reply length; always clamped to remaining ctx
+
   // Quick-start prompt cards (from the reference image).
   suggestions: [
     { tag: "EXPLAIN", text: "Unified memory in three sentences" },

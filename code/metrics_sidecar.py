@@ -197,6 +197,7 @@ class Handler(BaseHTTPRequestHandler):
     model_path = None
     enable_warm = False
     backend = None
+    ctx = None
     logs_dir = None
     state_file = None
 
@@ -244,6 +245,7 @@ class Handler(BaseHTTPRequestHandler):
                 "ram": ram_stats(),
                 "disk": {"read_mb_s": disk_read_rate()},
                 "backend": self.backend,
+                "ctx": self.ctx,
                 "model": None,
             }
             if model:
@@ -327,6 +329,9 @@ def main():
                          "Defaults to the sibling ds4 checkout (../../ds4); ds4Service passes --model explicitly.")
     ap.add_argument("--backend", default=os.environ.get("DS4_BACKEND", ""),
                     help="inference backend label to report to the UI (cuda/rocm/cpu)")
+    ap.add_argument("--ctx", default=os.environ.get("DS4_CTX", ""),
+                    help="server context window (--ctx) to report to the UI for the headroom meter. "
+                         "Omit when a per-box ds4-server.sh owns ctx; the UI falls back to config.serverCtx.")
     ap.add_argument("--enable-warm", action="store_true",
                     help="expose POST /warm (runs a full read of the model)")
     ap.add_argument("--logs-dir", default=os.environ.get("DS4_LOGS_DIR", ""),
@@ -338,12 +343,13 @@ def main():
     Handler.model_path = os.path.realpath(args.model) if os.path.exists(args.model) else None
     Handler.enable_warm = args.enable_warm
     Handler.backend = args.backend or None
+    Handler.ctx = _num(args.ctx, int) if args.ctx else None
     Handler.logs_dir = (os.path.realpath(args.logs_dir) if args.logs_dir
                         else os.path.realpath(os.path.join(os.path.dirname(__file__), "..", "logs")))
     Handler.state_file = (os.path.realpath(args.state_file) if args.state_file
                           else os.path.realpath(os.path.join(os.path.dirname(__file__), "..", "lastsession.json")))
     print(f"ds4 metrics sidecar on http://{args.host}:{args.port}  "
-          f"model={Handler.model_path}  backend={Handler.backend}  "
+          f"model={Handler.model_path}  backend={Handler.backend}  ctx={Handler.ctx}  "
           f"logs={Handler.logs_dir}  warm={'on' if args.enable_warm else 'off'}", flush=True)
     ThreadingHTTPServer((args.host, args.port), Handler).serve_forever()
 
