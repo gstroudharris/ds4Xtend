@@ -966,12 +966,13 @@
   async function agentStreamTurn(ac) {
     const ui = agAssistant();
     let content = "", reasoning = "", tcs = [], previews = {}, tFirst = null, outTok = 0, usage = null, finishReason = null;
+    let sentMsgs = agentMsgs;          // function-scoped: assigned in the stream loop, read again at calibration AFTER the try/finally
     const t0 = performance.now();
     const estPrompt = estimateTokens(agentMsgs);
     beginLiveMetrics();
     const liveTimer = setInterval(() => renderLiveMetrics({ t0, tFirst, outTokEst: outTok, estPrompt }), 150);   // live rail tiles during agent turns
     try {
-    let res, level = 0, sentMsgs = agentMsgs;
+    let res, level = 0;
     for (;;) {
       const toolsChrs = toolsChars();
       sentMsgs = fitForSend(AGENT_SYSTEM, agentMsgs, { level: level, protectFirst: true, extraTok: tokFromChars(toolsChrs) });   // trim to fit --ctx (reserve the tool-schema tokens)
