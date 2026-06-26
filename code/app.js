@@ -124,6 +124,8 @@
       if (streaming) stop();
       resetLog("chat"); messages = []; messagesEl.innerHTML = ""; resetTurnMetrics(); saveChat();
     }
+    lastStateJson = "";   // bust saveState's change-dedup so the purge always fires
+    saveState(false);     // immediately mirror the cleared snapshot to the sidecar /state (don't wait for the 3s timer) so a reload can't resurrect the conversation
     updateView(); input.focus();
   });
   function autosize(t) { t.style.height = "auto"; t.style.height = Math.min(t.scrollHeight, 200) + "px"; }
