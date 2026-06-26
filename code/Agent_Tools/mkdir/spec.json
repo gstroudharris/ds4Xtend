@@ -1,0 +1,8 @@
+{
+  "function": {
+    "name": "mkdir",
+    "description": "Create a directory (and parents).",
+    "parameters": { "type": "object", "properties": { "path": { "type": "string" } }, "required": ["path"] }
+  },
+  "mutating": true
+}

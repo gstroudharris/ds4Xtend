@@ -369,7 +369,7 @@ register "metrics-sidecar" "$!"
 printf '    sidecar '; wait_http "http://127.0.0.1:$SIDE_PORT/healthz" 10 && { printf '\n'; ok "sidecar online (model gauge → $(basename "$MODEL"))"; } || { printf '\n'; warn "sidecar slow/own port busy"; }
 
 AGENT_LOG="$RUN_DIR/agent-tools.log"
-( exec python3 "$CODE_DIR/agent_tools.py" --port "$AGENT_PORT" ) > "$AGENT_LOG" 2>&1 &
+( exec python3 "$CODE_DIR/Agent_Tools/agent_tools.py" --port "$AGENT_PORT" ) > "$AGENT_LOG" 2>&1 &
 register "agent-tools" "$!"
 printf '    agent-tools '
 if wait_http "http://127.0.0.1:$AGENT_PORT/healthz" 10; then echo; ok "agent-tools online (sandboxed file I/O for Agent mode)"; else echo; warn "agent-tools slow/own port busy"; fi

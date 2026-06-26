@@ -618,26 +618,13 @@
   }
 
   /* ================= Agent mode (sandboxed file tools) ================= */
-  const AGENT_SYSTEM =
-    "You are DS4, a coding agent working inside one locked project folder. Use the provided tools to " +
-    "inspect and modify files. All paths are relative to the workspace root (use '.' for the root); you " +
-    "cannot access anything outside it. Prefer edit_file for small changes; read or search before " +
-    "editing. When writing a file, provide its full new contents. When done, briefly summarize your changes. " +
-    "Context is limited: read large files in ranges with read_file offset/limit instead of whole, and note that " +
-    "older tool outputs may be trimmed to fit - re-read the specific range you need. If you get an automatic " +
-    "context notice, wrap up and summarize promptly.";
-
-  const TOOLS = [
-    { type: "function", function: { name: "list_dir", description: "List files and folders in a directory.", parameters: { type: "object", properties: { path: { type: "string" } }, required: ["path"] } } },
-    { type: "function", function: { name: "read_file", description: "Read a text file. Optional 0-based line range offset+limit pages through large files; older tool outputs may be trimmed from context, so re-read a specific range when you need detail again.", parameters: { type: "object", properties: { path: { type: "string" }, offset: { type: "integer", description: "0-based first line to return (optional)." }, limit: { type: "integer", description: "Max lines to return from offset (optional)." } }, required: ["path"] } } },
-    { type: "function", function: { name: "search", description: "Search file contents for a substring.", parameters: { type: "object", properties: { query: { type: "string" }, path: { type: "string", description: "Optional subdirectory to limit the search." } }, required: ["query"] } } },
-    { type: "function", function: { name: "write_file", description: "Create or overwrite a text file with full new contents.", parameters: { type: "object", properties: { path: { type: "string" }, content: { type: "string" } }, required: ["path", "content"] } } },
-    { type: "function", function: { name: "edit_file", description: "Find-and-replace in a text file (replaces every occurrence of 'find' with 'replace').", parameters: { type: "object", properties: { path: { type: "string" }, find: { type: "string" }, replace: { type: "string" } }, required: ["path", "find", "replace"] } } },
-    { type: "function", function: { name: "mkdir", description: "Create a directory (and parents).", parameters: { type: "object", properties: { path: { type: "string" } }, required: ["path"] } } },
-    { type: "function", function: { name: "delete", description: "Delete a file or empty directory.", parameters: { type: "object", properties: { path: { type: "string" } }, required: ["path"] } } },
-  ];
-  const TOOLS_CHARS = JSON.stringify(TOOLS).length;   // tool-schema bytes sent every agent turn — reserved in the budget so they're not uncounted headroom
-  const TOOL_EP = { list_dir: "/tools/list_dir", read_file: "/tools/read_file", write_file: "/tools/write_file", search: "/tools/search", edit_file: "/tools/edit_file", mkdir: "/tools/mkdir", delete: "/tools/delete", tree: "/tools/tree" };
+  const AG = window.DS4_AGENT || {};                          // agent tool contract — Agent_Tools/tools.js
+  const AGENT_SYSTEM = AG.SYSTEM || "";
+  // The tool catalog is fetched live from the backend registry by AG.load() (called in runAgent), so read
+  // it through these helpers — capturing AG.TOOLS at boot would freeze an empty list before load() runs.
+  const toolDefs  = () => AG.TOOLS || [];                     // function defs sent to ds4 each turn
+  const toolEp    = (name) => (AG.ENDPOINTS || {})[name];     // tool name -> backend HTTP path
+  const toolsChars = () => JSON.stringify(toolDefs()).length; // tool-schema bytes sent every turn — reserved in the budget so they're not uncounted headroom
 
   /* ----- folder picker ----- */
   const picker = $("picker"), pickerList = $("pickerList"), pickerPath = $("pickerPath"), agentWs = $("agentWs"), agentEmpty = $("agentEmpty");
@@ -820,7 +807,7 @@
   }
 
   async function callTool(name, args) {
-    const ep = TOOL_EP[name];
+    const ep = toolEp(name);
     if (!ep) return { error: "unknown tool: " + name };
     try {
       const r = await fetch(C.agentUrl + ep, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(args || {}) });
@@ -828,7 +815,7 @@
     } catch (e) { return { error: "agent-tools unreachable: " + (e.message || e) }; }
   }
 
-  const MUTATING = { write_file: 1, edit_file: 1, mkdir: 1, delete: 1 };
+  const isMutating = (name) => !!(AG.MUTATING || {})[name];   // tools that need approval in Ask mode — set live by AG.load()
   function askConfirm(title, body) {
     return new Promise((resolve) => {
       const box = document.createElement("div"); box.className = "approve";
@@ -861,7 +848,7 @@
     return { title: name, body: JSON.stringify(args) };
   }
   async function execToolCall(name, args, card, ac) {
-    if (MUTATING[name] && agentMode === "ask") {
+    if (isMutating(name) && agentMode === "ask") {
       let ok;
       if (card.approve) ok = await card.approve((name === "edit_file" ? "edit to " : "write to ") + args.path);  // inline on the live preview
       else { const a = await approvalFor(name, args); ok = await askConfirm(a.title, a.body); }
@@ -875,7 +862,7 @@
       else if (name === "delete") display = { content: "🗑 deleted " + (res.deleted || "") + " " + (res.path || args.path) };
     }
     card.result(display, res && res.error ? "error" : "ok");
-    if (MUTATING[name] && !(res && res.error)) refreshTree();
+    if (isMutating(name) && !(res && res.error)) refreshTree();
     return res;
   }
 
@@ -969,11 +956,12 @@
     try {
     let res, level = 0, sentMsgs = agentMsgs;
     for (;;) {
-      sentMsgs = fitForSend(AGENT_SYSTEM, agentMsgs, { level: level, protectFirst: true, extraTok: tokFromChars(TOOLS_CHARS) });   // trim to fit --ctx (reserve the tool-schema tokens)
-      const mtA = maxTokensFor(sumTok(sentMsgs) + tokFromChars(AGENT_SYSTEM.length) + tokFromChars(TOOLS_CHARS));
+      const toolsChrs = toolsChars();
+      sentMsgs = fitForSend(AGENT_SYSTEM, agentMsgs, { level: level, protectFirst: true, extraTok: tokFromChars(toolsChrs) });   // trim to fit --ctx (reserve the tool-schema tokens)
+      const mtA = maxTokensFor(sumTok(sentMsgs) + tokFromChars(AGENT_SYSTEM.length) + tokFromChars(toolsChrs));
       res = await fetch(C.serverUrl + "/v1/chat/completions", {
         method: "POST", headers: { "Content-Type": "application/json" }, signal: ac.signal,
-        body: JSON.stringify({ model: C.model, stream: true, stream_options: { include_usage: true }, tools: TOOLS, tool_choice: "auto", messages: [{ role: "system", content: AGENT_SYSTEM }].concat(sentMsgs), ...thinkSpread(agentThink.level), ...(mtA ? { max_tokens: mtA } : {}) }),
+        body: JSON.stringify({ model: C.model, stream: true, stream_options: { include_usage: true }, tools: toolDefs(), tool_choice: "auto", messages: [{ role: "system", content: AGENT_SYSTEM }].concat(sentMsgs), ...thinkSpread(agentThink.level), ...(mtA ? { max_tokens: mtA } : {}) }),
       });
       if (res.ok) break;
       const errTxt = await res.text();
@@ -1012,7 +1000,7 @@
     const tEnd = performance.now();
     ui.finalize(content);
     const usedTok = finalizeTurnMetrics({ t0, tFirst, tEnd, usage, outTokEst: outTok, estPrompt });
-    if (usage && usage.prompt_tokens) calibrateTokenizer(AGENT_SYSTEM.length + TOOLS_CHARS + charsOf(sentMsgs), usage.prompt_tokens);   // learn real chars/token (incl. system + tools)
+    if (usage && usage.prompt_tokens) calibrateTokenizer(AGENT_SYSTEM.length + toolsChars() + charsOf(sentMsgs), usage.prompt_tokens);   // learn real chars/token (incl. system + tools)
     if (finishReason === "length") noticeTruncation(ui, usedTok);
     if (content) {
       const decSecs = (tEnd - (tFirst == null ? tEnd : tFirst)) / 1000;
@@ -1027,6 +1015,11 @@
 
   async function runAgent(text) {
     if (!workspace) { toast("Choose a folder for the agent first."); $("agentPick").click(); return; }
+    if (typeof AG.load === "function") {               // fetch the live tool catalog from the backend registry (cached after first call)
+      try { await AG.load(C.agentUrl); }
+      catch (e) { toast("Couldn't load agent tools: " + (e.message || e)); return; }
+    }
+    if (!toolDefs().length) { toast("No agent tools available from the backend."); return; }
     const myRun = ++agentRunId;                        // tag this run so Clear/supersede can invalidate it
     const ac = new AbortController(); agentAbort = ac;  // local handle so Stop/Clear can't NPE the loop
     agentBusy = true; setSendStop(true); agentEmpty.hidden = true;

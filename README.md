@@ -103,6 +103,7 @@ diverges your clone from upstream). Ignore them locally instead, in **`ds4/.git/
 - `ds4Service` — one-command launcher for the whole stack (repo root)
 - `code/index.html` · `styles.css` · `app.js` — the SPA (markup / COSMIC theme / chat + telemetry)
 - `code/config.js` — server & sidecar URLs, suggestion cards
+- `code/Agent_Tools/` — Agent-mode file tools: `tools.js` (the model-facing tool contract + system prompt, consumed by app.js), `agent_tools.py` (the sandboxed executor on :8082), `TOOL_TEMPLATE.md` (how to add a tool + best practices)
 - `code/metrics_sidecar.py` — GPU/RAM/disk/model-residency JSON on :8081
 - `code/run-frontend.sh` — sidecar + static server (not ds4-server)
 - `code/bench_thinking.py` — measures whether "Auto" thinking-mode saves time on this box (think on/off savings + the cost of switching); run against a live ds4-server, esp. on the slow box

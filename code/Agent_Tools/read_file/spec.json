@@ -1,0 +1,16 @@
+{
+  "function": {
+    "name": "read_file",
+    "description": "Read a text file. Optional 0-based line range offset+limit pages through large files; older tool outputs may be trimmed from context, so re-read a specific range when you need detail again.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "path": { "type": "string" },
+        "offset": { "type": "integer", "description": "0-based first line to return (optional)." },
+        "limit": { "type": "integer", "description": "Max lines to return from offset (optional)." }
+      },
+      "required": ["path"]
+    }
+  },
+  "mutating": false
+}

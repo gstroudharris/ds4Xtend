@@ -1,0 +1,17 @@
+{
+  "function": {
+    "name": "edit_file",
+    "description": "Replace text in a file. 'find' must match EXACTLY ONCE — include enough surrounding context to make it unique — unless replace_all is set.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "path": { "type": "string" },
+        "find": { "type": "string", "description": "Exact text to replace; must be unique in the file unless replace_all is true." },
+        "replace": { "type": "string", "description": "Replacement text (use an empty string to delete the matched text)." },
+        "replace_all": { "type": "boolean", "description": "Replace every occurrence instead of requiring a unique match (optional, default false)." }
+      },
+      "required": ["path", "find", "replace"]
+    }
+  },
+  "mutating": true
+}

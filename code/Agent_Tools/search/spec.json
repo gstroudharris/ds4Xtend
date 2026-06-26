@@ -1,0 +1,15 @@
+{
+  "function": {
+    "name": "search",
+    "description": "Search file contents for a literal substring (not a regex). Returns matching file:line snippets.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "query": { "type": "string", "description": "Literal text to find." },
+        "path": { "type": "string", "description": "Optional subdirectory to limit the search." }
+      },
+      "required": ["query"]
+    }
+  },
+  "mutating": false
+}

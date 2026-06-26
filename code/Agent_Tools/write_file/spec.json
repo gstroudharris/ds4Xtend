@@ -1,0 +1,15 @@
+{
+  "function": {
+    "name": "write_file",
+    "description": "Create or overwrite a text file with its FULL new contents (not a fragment). For small changes to an existing file, prefer edit_file.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "path": { "type": "string" },
+        "content": { "type": "string", "description": "The complete file contents." }
+      },
+      "required": ["path", "content"]
+    }
+  },
+  "mutating": true
+}
