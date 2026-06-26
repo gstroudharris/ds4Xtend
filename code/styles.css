@@ -205,13 +205,13 @@ kbd {
 }
 .composer__input::placeholder { color: var(--text-faint); }
 .composer__actions { display: flex; gap: 8px; }
-.composer__below { display: flex; justify-content: flex-end; margin-top: 8px; }   /* Send/Loop toggle lives below the box */
+.composer__below { display: flex; align-items: center; gap: 12px; margin-top: 8px; padding: 0 13px; }   /* 13px = box padding(12)+border(1), so Send/Loop lands under the Send button + hint aligns to the textarea */
 .composer__input:disabled { opacity: .5; cursor: not-allowed; }
 .composer.is-locked #clearBtn,
 .composer.is-locked #sendLoopToggle,
 .composer.is-locked #thinkToggle,
 .composer.is-locked #agentModeToggle { opacity: .45; pointer-events: none; }   /* while looping: Stop + Follow stay usable */
-.composer__hint { text-align: center; color: var(--text-faint); font-size: 12px; margin-top: 10px; }
+.composer__hint { flex: 1; text-align: center; color: var(--text-faint); font-size: 12px; margin: 0; }   /* fills the row; centers (alone in Chat, beside Send/Loop in Agent) */
 
 .btn { appearance: none; font: inherit; font-weight: 600; cursor: pointer; border-radius: var(--r-btn); padding: 9px 18px; border: 1px solid transparent; transition: background .15s ease, border-color .15s ease, opacity .15s ease; }
 .btn--primary { background: var(--accent); color: var(--on-accent); }
@@ -305,8 +305,8 @@ kbd {
 /* thinking toggle chip */
 .composer__opts { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
 #stickToggle { margin-left: auto; }
-.chip { appearance: none; cursor: pointer; font: inherit; font-size: 12.5px; font-weight: 600; color: var(--text-dim);
-  background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--r-pill); padding: 5px 14px; transition: color .15s ease, border-color .15s ease, background .15s ease; }
+.chip { appearance: none; cursor: pointer; font: inherit; font-size: 12px; font-weight: 600; color: var(--text-dim); white-space: nowrap;
+  background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--r-pill); padding: 7px 14px; transition: color .15s ease, border-color .15s ease, background .15s ease; }   /* 7px padding -> same height as the .seg2 controls; nowrap so the label can't wrap and grow taller */
 .chip.is-on { color: var(--accent); border-color: var(--accent); background: rgba(124,140,255,0.10); }
 
 .btn:disabled { opacity: .5; cursor: not-allowed; }
@@ -332,6 +332,16 @@ kbd {
 .seg2.is-loop .seg2__thumb { transform: translateX(100%); background: var(--warn); }   /* Loop = same orange as Auto */
 .seg2__btn { position: relative; z-index: 1; appearance: none; border: 0; background: transparent; color: var(--text-dim); font: inherit; font-weight: 600; font-size: 12px; padding: 4px 14px; border-radius: var(--r-pill); cursor: pointer; }
 .seg2__btn.is-active { color: var(--on-accent); }
+
+/* Thinking switch (on · off · auto) — per-segment active color: accent=on, grey=off, orange=auto */
+.thinksw { display: inline-flex; align-items: center; padding: 3px; gap: 2px; background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--r-pill); }
+.thinksw__btn { appearance: none; border: 0; background: transparent; color: var(--text-dim); font: inherit; font-weight: 600; font-size: 12px; padding: 4px 14px; border-radius: var(--r-pill); cursor: pointer; transition: background .15s ease, color .15s ease; }   /* metrics match .seg2__btn so heights line up */
+.thinksw__btn:hover { color: var(--text); }
+.thinksw__btn.is-active[data-tm="on"]   { background: var(--accent);    color: var(--on-accent); }
+.thinksw__btn.is-active[data-tm="off"]  { background: var(--surface-3); color: var(--text); }
+.thinksw__btn.is-active[data-tm="auto"] { background: var(--warn);      color: var(--on-accent); }
+.thinksw.is-locked { opacity: 0.5; pointer-events: none; }   /* unselectable mid-loop, like the Chat/Agent toggle */
+.msg__think { color: var(--warn); font-family: var(--mono); }
 
 /* folder picker */
 .picker { background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-card); overflow: hidden; }

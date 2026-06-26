@@ -21,6 +21,23 @@ window.DS4_CONFIG = {
   contextSafety: 0.9,           // fraction of (ctx - reserve) the input may use (absorbs token-estimate error)
   contextRecentKeep: 6,         // newest messages never dropped (only stubbed as a last resort)
   contextStubChars: 800,        // size OLD tool outputs are trimmed to (head+tail) + a re-read hint
+  agentToolOutputChars: "auto", // cap on tool output the MODEL sees per call (drives prefill cost). "auto" scales
+                                //   to hardware — small on a slow iGPU, large on CUDA; set a number to pin it.
+  toolPrefillTargetSec: 8,      // "auto" aims to keep one tool-output prefill under ~this many seconds on this box
+
+  // Thinking mode. The switch has 3 positions: "on" (always think), "off" (never), "auto" (a local heuristic
+  // skips thinking on trivial turns — the headline feature). Auto is BALANCED + biased to think, because
+  // under-thinking a hard task is the costly, unrecoverable error while over-thinking only wastes time.
+  thinkDefault: "auto",         // initial switch position when nothing is saved
+  thinkOnWords: ["why","how","explain","prove","derive","analyze","analyse","compare","debug","fix","refactor",
+    "optimize","optimise","design","plan","implement","algorithm","complexity","edge case","step by step","reason",
+    "architect","trade-off","tradeoff","root cause","investigate","diagnose","figure out","what's wrong","whats wrong"],
+  thinkOffWords: ["hi","hello","hey","yo","sup","thanks","thank you","ok","okay","yes","yep","got it","cool",
+    "rename","lowercase","uppercase","capitalize","format this","what time","what's the date","whats the date"],
+  thinkShortWords: 6,           // auto: a prompt with this few words and no cue is treated as trivial -> skip thinking
+  thinkSkipMaxWords: 14,        // auto: a skip-word only skips when the whole prompt is at most this many words
+  diffLogMax: 200,              // turns of the difficulty log kept in localStorage (seeds future learned weighting)
+
   contextWarnPct: 0.80,         // agent gets a "wrap up" notice at this fill
   contextDangerPct: 0.92,       // agent gets a stronger "stop exploring" notice at this fill
   // maxOutputTokens: 2048,     // optional hard output cap (default: omit -> server default, auto-clamped to fit)

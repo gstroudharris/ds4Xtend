@@ -81,7 +81,12 @@
 
       <footer class="composer">
         <div class="composer__opts">
-          <button class="chip is-on" id="thinkToggle" title="Toggle thinking mode">Thinking</button>
+          <button class="chip is-on" id="thinkChip" title="Toggle thinking">Thinking</button>
+          <div class="thinksw" id="thinkSwitch" hidden role="group" aria-label="Thinking mode" title="Thinking — on · off · auto (model decides per turn)">
+            <button type="button" class="thinksw__btn" data-tm="on">Thinking</button>
+            <button type="button" class="thinksw__btn" data-tm="off">Off</button>
+            <button type="button" class="thinksw__btn is-active" data-tm="auto">Auto</button>
+          </div>
           <div class="seg2" id="agentModeToggle" hidden title="Ask: show a diff and wait before each write · Auto: apply writes immediately (still inside the folder)">
             <span class="seg2__thumb"></span>
             <button class="seg2__btn is-active" data-am="ask">Ask</button>
@@ -98,13 +103,13 @@
           </div>
         </div>
         <div class="composer__below">
+          <div class="composer__hint"><kbd>Enter</kbd> to send · <kbd>Shift</kbd>+<kbd>Enter</kbd> for a newline</div>
           <div class="seg2" id="sendLoopToggle" title="Send: run once · Loop: re-run this prompt until you press Stop">
             <span class="seg2__thumb"></span>
             <button class="seg2__btn is-active" data-sl="send">Send</button>
             <button class="seg2__btn" data-sl="loop">Loop</button>
           </div>
         </div>
-        <div class="composer__hint"><kbd>Enter</kbd> to send · <kbd>Shift</kbd>+<kbd>Enter</kbd> for a newline</div>
       </footer>
     </main>
 

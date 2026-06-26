@@ -105,4 +105,5 @@ diverges your clone from upstream). Ignore them locally instead, in **`ds4/.git/
 - `code/config.js` — server & sidecar URLs, suggestion cards
 - `code/metrics_sidecar.py` — GPU/RAM/disk/model-residency JSON on :8081
 - `code/run-frontend.sh` — sidecar + static server (not ds4-server)
+- `code/bench_thinking.py` — measures whether "Auto" thinking-mode saves time on this box (think on/off savings + the cost of switching); run against a live ds4-server, esp. on the slow box
 - `docs/frontend_specs.md` — full specification & roadmap

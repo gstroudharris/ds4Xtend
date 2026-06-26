@@ -38,6 +38,8 @@
     agentPanel.hidden = !agent;
     $("leftRail").hidden = !agent;            // working-tree rail is agent-only
     $("agentModeToggle").hidden = !agent;     // Ask/Auto is agent-only (now sits next to Thinking)
+    $("thinkChip").hidden = agent;            // Chat: Thinking is a plain chip toggle
+    $("thinkSwitch").hidden = !agent;         // Agent: Thinking is the on/off/auto switch
     $("sendLoopToggle").hidden = !agent;      // Send/Loop is agent-only too
     messagesEl.hidden = agent;
     emptyState.hidden = agent || messages.length > 0;
@@ -46,6 +48,7 @@
       ? (workspace ? "Ask the agent to read or edit files in the folder…" : "Choose a folder for the agent first…")
       : "Message DS4… (Enter to send, Shift+Enter for newline)";
     setSendStop();   // reflect Send/Loop on mode switch (loop is agent-only)
+    reflectThink();  // Chat shows the on/off toggle; Agent shows on/off/auto
   }
 
   /* ---------------- collapsible side rails ---------------- */
@@ -72,12 +75,43 @@
   /* ---------------- composer ---------------- */
   const input = $("input");
   const composerEl = document.querySelector(".composer");
-  let thinkingOn = true;
-  $("thinkToggle").addEventListener("click", (e) => {
-    thinkingOn = !thinkingOn;
-    try { localStorage.setItem("ds4:thinking", thinkingOn ? "1" : "0"); } catch (err) {}
-    e.target.classList.toggle("is-on", thinkingOn);
+  let thinkMode = (C.thinkDefault === "on" || C.thinkDefault === "off") ? C.thinkDefault : "auto";   // AGENT: "on" | "off" | "auto"
+  let chatThink = "on";                                      // CHAT: "on" | "off" only — a plain toggle, no auto heuristic
+  let agentThink = { level: "on", reason: "", auto: false }; // auto: per-run agent decision (escalate-only within a run)
+  const thinkSwitch = $("thinkSwitch"), thinkChip = $("thinkChip");
+  function reflectThink() {                                  // Chat = a Thinking chip (on/off); Agent = the on/off/auto switch
+    thinkChip.classList.toggle("is-on", chatThink === "on");
+    thinkSwitch.querySelectorAll(".thinksw__btn").forEach((b) => b.classList.toggle("is-active", b.dataset.tm === thinkMode));
+  }
+  thinkChip.addEventListener("click", () => {                // CHAT thinking: a plain on/off toggle, like Following
+    if (looping) return;
+    chatThink = chatThink === "on" ? "off" : "on";
+    try { localStorage.setItem("ds4:chatThink", chatThink); } catch (e) {}
+    reflectThink();
   });
+  thinkSwitch.querySelectorAll(".thinksw__btn").forEach((b) => b.addEventListener("click", () => {   // AGENT thinking: on/off/auto
+    if (looping) return;                                     // unselectable mid-loop, like the Chat/Agent toggle
+    thinkMode = b.dataset.tm;
+    try { localStorage.setItem("ds4:thinking", thinkMode); } catch (e) {}
+    reflectThink();
+  }));
+  reflectThink();
+  /* ---- auto-thinking heuristic: local, zero round-trip; default-ON, skip only confident-trivial turns ---- */
+  function rateDifficulty(text) {
+    const t = String(text || "").trim(), low = t.toLowerCase(), words = t ? t.split(/\s+/).length : 0;
+    if (/\b(no|nope|wrong|incorrect|try again|redo|that'?s not|you (missed|forgot)|actually|instead|still (broken|failing|wrong))\b/.test(low)) return { level: "on", reason: "follow-up fix" };
+    if (/```|(^|[\s("'`])[\w./-]+\.(js|ts|jsx|tsx|py|c|h|cpp|hpp|go|rs|java|rb|php|css|html|json|sh|sql|md|ya?ml|toml)\b/.test(t)) return { level: "on", reason: "code / files" };
+    if ((C.thinkOnWords || []).some((w) => low.includes(w))) return { level: "on", reason: "reasoning cue" };
+    if (/[=∑√∫×÷]|\b\d+\s*[-+*/^%]\s*\d+\b/.test(t)) return { level: "on", reason: "math" };
+    if ((t.match(/\?/g) || []).length >= 2 || /\b(and then|after that|also,|first,|next,|finally,|step \d)\b/.test(low)) return { level: "on", reason: "multi-step" };
+    if (words <= (C.thinkSkipMaxWords || 14) && (C.thinkOffWords || []).some((w) => low === w || low.startsWith(w + " ") || low.includes(" " + w))) return { level: "off", reason: "trivial" };
+    if (words <= (C.thinkShortWords || 6)) return { level: "off", reason: "very short" };
+    return { level: "on", reason: "default" };               // default-ON floor — under-thinking is the costly, unrecoverable error
+  }
+  function thinkSpread(level) { return level === "off" ? { thinking: { type: "disabled" } } : {}; }
+  function logDifficulty(rec) {
+    try { const k = "ds4:diffLog", a = JSON.parse(localStorage.getItem(k) || "[]"); a.push(rec); while (a.length > (C.diffLogMax || 200)) a.shift(); localStorage.setItem(k, JSON.stringify(a)); } catch (e) {}
+  }
   input.addEventListener("input", () => autosize(input));
   input.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); if (streaming || agentBusy || looping) return; if (loopMode && mode === "agent") startLoop(); else send(); } });
   $("sendBtn").addEventListener("click", () => { if (streaming || agentBusy || looping) return stopLoop(); if (loopMode && mode === "agent") return startLoop(); send(); });
@@ -156,7 +190,7 @@
       thinking(t) { think.hidden = false; bodyCur.hidden = true; thinkCur.hidden = false; tT.feed(t); },
       stream(t) { thinkCur.hidden = true; tT.flush(); bodyCur.hidden = false; bT.feed(t); },
       finalize(content) { tT.finish(); bT.finish(); thinkCur.remove(); bodyCur.remove(); body.classList.remove("is-streaming"); body.innerHTML = mdRender(content); addCopy(body); think.open = false; },
-      meta(s) { meta.hidden = false; meta.textContent = s; },
+      meta(s, dec) { meta.hidden = false; meta.textContent = ""; meta.appendChild(document.createTextNode(s)); if (dec && dec.auto) { const k = document.createElement("span"); k.className = "msg__think"; k.textContent = " · auto · " + (dec.level === "off" ? "skipped" : "think") + " (" + dec.reason + ")"; meta.appendChild(k); } },
       notice(text, full) { const n = document.createElement("div"); n.className = "msg__warn" + (full ? " msg__warn--full" : ""); n.textContent = "⚠ " + text; root.appendChild(n); scrollDown(); },
       error(msg) { tT.finish(); bT.finish(); thinkCur.remove(); bodyCur.remove(); root.classList.add("msg--error"); body.classList.remove("is-streaming"); body.textContent = "⚠ " + msg; },
     };
@@ -182,6 +216,7 @@
     beginLiveMetrics();
     const liveTimer = setInterval(() => renderLiveMetrics({ t0, tFirst, outTokEst, estPrompt }), 150);
     abortCtrl = new AbortController();
+    const think = { level: chatThink, reason: chatThink, auto: false };   // Chat: manual on/off toggle (no auto heuristic)
     try {
       let res, level = 0;
       for (;;) {
@@ -193,7 +228,7 @@
           signal: abortCtrl.signal,
           body: JSON.stringify({
             model: C.model, stream: true, stream_options: { include_usage: true },
-            messages: sendMsgs, ...(thinkingOn ? {} : { thinking: { type: "disabled" } }),
+            messages: sendMsgs, ...thinkSpread(think.level),
             ...(mt ? { max_tokens: mt } : {}),
           }),
         });
@@ -235,8 +270,9 @@
       if (usage) {
         const decSecs = (tEnd - (tFirst == null ? tEnd : tFirst)) / 1000;
         const tps = usage.completion_tokens && decSecs > 0 ? (usage.completion_tokens / decSecs).toFixed(1) : "?";
-        ui.meta(`${tps} t/s · ${usage.completion_tokens == null ? "?" : usage.completion_tokens} tokens · ${((tEnd - t0) / 1000).toFixed(1)} s`);
+        ui.meta(`${tps} t/s · ${usage.completion_tokens == null ? "?" : usage.completion_tokens} tokens · ${((tEnd - t0) / 1000).toFixed(1)} s`, think);
       }
+      logDifficulty({ ts: Date.now(), mode: "chat", level: think.level, reason: think.reason, auto: think.auto, promptTok: usage && usage.prompt_tokens, completionTok: usage && usage.completion_tokens, reasoningTok: Math.round(reasoning.length / 4), finishReason });
       if (finishReason === "length") noticeTruncation(ui, usedTok);
     } catch (e) {
       if (e.name === "AbortError") { ui.finalize(content || "_(stopped)_"); finalizeTurnMetrics({ t0, tFirst, tEnd: performance.now(), usage, outTokEst, estPrompt }); }
@@ -260,6 +296,7 @@
     composerEl.classList.toggle("is-locked", looping);
     toggle.style.pointerEvents = looping ? "none" : "";   // can't switch Chat/Agent mid-loop
     toggle.style.opacity = looping ? "0.5" : "";
+    thinkSwitch.classList.toggle("is-locked", looping);   // can't change thinking mode mid-loop either
   }
 
   /* ---------------- Send / Loop toggle + loop driver ---------------- */
@@ -332,6 +369,7 @@
     const ot = (usage && usage.completion_tokens != null) ? usage.completion_tokens : outTokEst;
     setTile("mTtft", ttft != null ? ttft.toFixed(2) + " s" : "—", false);
     setTile("mTotal", total.toFixed(2) + " s", false);
+    if (pt && ttft) lastPrefillTps = pt / ttft;            // remember this box's prefill speed to size the tool cap
     setTile("mPrefill", (pt && ttft) ? (pt / ttft).toFixed(1) + " t/s" : "—", false);
     setTile("mDecode", (ot && ttft != null && total - ttft > 0) ? (ot / (total - ttft)).toFixed(1) + " t/s" : "—", false);
     setTile("mPrompt", pt != null ? String(pt) : "—", false);
@@ -349,8 +387,26 @@
 
   /* ---------------- context-window headroom ---------------- */
   let serverCtx = null;          // ds4-server --ctx, learned live from the sidecar (m.ctx)
+  let serverBackend = null;      // ds4 backend label (cuda/rocm/cpu) from the sidecar, to size the tool-output cap
+  let lastPrefillTps = null;     // last measured prefill throughput (t/s), so "auto" can fit this box's real speed
   let lastCtxUsed = null;        // last measured occupancy, so we can re-render if ctx arrives late
   function currentCtx() { return serverCtx || C.serverCtx || null; }
+  // Cap (chars) on the tool output the MODEL sees per call — the agent's biggest prefill cost. A number in
+  // config pins it; "auto" scales to this box: seed by backend, refine toward a prefill-time budget once we've
+  // measured prefill t/s, clamped to [4k, 25% of the context window]. Keeps tool prefills fast on a weak iGPU.
+  function toolCapChars() {
+    const cfg = C.agentToolOutputChars;
+    if (typeof cfg === "number" && cfg > 0) return Math.round(cfg);
+    const ctxChars = (currentCtx() || 32768) * 4;
+    const hi = Math.min(32000, Math.floor(ctxChars * 0.25));
+    const be = String(serverBackend || "").toLowerCase();
+    let seed = (be === "cuda" || be === "nvidia") ? 24000 : (be === "rocm" || be === "amd" || be === "cpu") ? 6000 : 8000;
+    if (lastPrefillTps && lastPrefillTps > 0) seed = lastPrefillTps * (C.toolPrefillTargetSec || 8) * 4;   // ~4 chars/token
+    return Math.max(4000, Math.min(hi, Math.round(seed)));
+  }
+  // Trim a tool result to the cap with head+tail + the re-read breadcrumb, applied ON INSERT so the model-visible
+  // bytes stay stable across turns (preserves ds4's warm KV-prefix reuse; avoids a later stub forcing a cold re-prefill).
+  function capToolOutput(res) { const s = JSON.stringify(res) || ""; const cap = toolCapChars(); return s.length <= cap ? s : stubText(s, cap); }
   function learnCtxFromError(txt) {                          // discover the server's ctx from a 400 so trimming self-heals on any box
     const m = /context[^0-9]{0,40}([0-9]{3,})/i.exec(txt || "");
     if (m) { const n = parseInt(m[1], 10); if (n > 256 && n !== serverCtx) { serverCtx = n; if (lastCtxUsed != null) updateContextMeter(lastCtxUsed, false); } }
@@ -661,7 +717,7 @@
     root.append(think, body, meta); agentMessagesEl.appendChild(root); agScroll();
     const tT = makeTyper(thinkText, thinkCur, scrollDown), bT = makeTyper(bodyText, bodyCur, scrollDown);
     return {
-      meta(s) { meta.hidden = false; meta.textContent = s; },
+      meta(s, dec) { meta.hidden = false; meta.textContent = ""; meta.appendChild(document.createTextNode(s)); if (dec && dec.auto) { const k = document.createElement("span"); k.className = "msg__think"; k.textContent = " · auto · " + (dec.level === "off" ? "skipped" : "think") + " (" + dec.reason + ")"; meta.appendChild(k); } },
       thinking(t) { think.hidden = false; bodyCur.hidden = true; thinkCur.hidden = false; tT.feed(t); },
       stream(t) { thinkCur.hidden = true; tT.flush(); bodyCur.hidden = false; bT.feed(t); },
       cursorOff() { thinkCur.hidden = true; bodyCur.hidden = true; tT.flush(); bT.flush(); },   // tool/preview owns the cursor now
@@ -865,7 +921,7 @@
       const mtA = maxTokensFor(sumTok(sendMsgs) + Math.ceil(AGENT_SYSTEM.length / 4));
       res = await fetch(C.serverUrl + "/v1/chat/completions", {
         method: "POST", headers: { "Content-Type": "application/json" }, signal: ac.signal,
-        body: JSON.stringify({ model: C.model, stream: true, stream_options: { include_usage: true }, tools: TOOLS, tool_choice: "auto", messages: [{ role: "system", content: AGENT_SYSTEM }].concat(sendMsgs), ...(thinkingOn ? {} : { thinking: { type: "disabled" } }), ...(mtA ? { max_tokens: mtA } : {}) }),
+        body: JSON.stringify({ model: C.model, stream: true, stream_options: { include_usage: true }, tools: TOOLS, tool_choice: "auto", messages: [{ role: "system", content: AGENT_SYSTEM }].concat(sendMsgs), ...thinkSpread(agentThink.level), ...(mtA ? { max_tokens: mtA } : {}) }),
       });
       if (res.ok) break;
       const errTxt = await res.text();
@@ -909,8 +965,10 @@
       const decSecs = (tEnd - (tFirst == null ? tEnd : tFirst)) / 1000;
       const tps = usage && usage.completion_tokens && decSecs > 0 ? (usage.completion_tokens / decSecs).toFixed(1) : "?";
       const tok = usage && usage.completion_tokens != null ? usage.completion_tokens : outTok;
-      ui.meta(tps + " t/s · " + tok + " tokens · " + ((tEnd - t0) / 1000).toFixed(1) + " s");
+      ui.meta(tps + " t/s · " + tok + " tokens · " + ((tEnd - t0) / 1000).toFixed(1) + " s", agentThink);
     }
+    logDifficulty({ ts: Date.now(), agent: true, mode: thinkMode, level: agentThink.level, reason: agentThink.reason, auto: agentThink.auto, promptTok: usage && usage.prompt_tokens, completionTok: usage && usage.completion_tokens, reasoningTok: Math.round(reasoning.length / 4), finishReason });
+    if (finishReason === "length" && agentThink.auto) agentThink.level = "on";   // escalate-only AFTER recording this turn
     return { content, toolCalls: tcs.filter(Boolean) };
   }
 
@@ -921,6 +979,7 @@
     agentBusy = true; setSendStop(true); agentEmpty.hidden = true;
     agUser(text); agentMsgs.push({ role: "user", content: text });
     nudgeState = 0;                                   // re-evaluate context nudges for this run
+    agentThink = thinkMode === "auto" ? Object.assign(rateDifficulty(text), { auto: true }) : { level: thinkMode, reason: thinkMode, auto: false };
     try {
       let guard = 0;
       while (guard++ < 25) {
@@ -940,7 +999,9 @@
           if (ac.signal.aborted) { res = { error: "stopped by user" }; if (card && card.result) card.result(res, "skip"); }   // pair every tool_call, even after Stop
           else res = await execToolCall(tc.name, args, card, ac);
           if (agentRunId !== myRun) return;
-          agentMsgs.push({ role: "tool", tool_call_id: tc.id, content: JSON.stringify(res).slice(0, 100000) });
+          agentMsgs.push({ role: "tool", tool_call_id: tc.id, content: capToolOutput(res) });   // cap on insert -> small, byte-stable prefill
+          if (agentThink.auto && res && res.error && !ac.signal.aborted) agentThink.level = "on";   // escalate-only: a tool failed -> think
+
         }
         if (ac.signal.aborted) break;
       }
@@ -1018,6 +1079,7 @@
     if (m.disk) { const r = m.disk.read_mb_s || 0; $("diskNote").textContent = `expert stream (disk): ${r < 1 ? "idle (served from RAM)" : r.toFixed(0) + " MB/s"}`; }
     setText("sampleHz", (C.pollHz || 2) + " Hz");
     if (m.ctx) serverCtx = m.ctx;
+    if (m.backend) serverBackend = m.backend;
     renderBackend(m);
     if (lastCtxUsed != null && !streaming && !agentBusy) updateContextMeter(lastCtxUsed, false);   // re-render if ctx arrived after a turn
   }
@@ -1149,8 +1211,11 @@
     agentMode = localStorage.getItem(LS.amode) || "ask";
     amToggle.classList.toggle("is-auto", agentMode === "auto");
     amToggle.querySelectorAll(".seg2__btn").forEach((x) => x.classList.toggle("is-active", x.dataset.am === agentMode));
-    thinkingOn = localStorage.getItem("ds4:thinking") !== "0";   // default on
-    $("thinkToggle").classList.toggle("is-on", thinkingOn);
+    const tv = localStorage.getItem("ds4:thinking");           // AGENT: migrate old boolean "1"/"0" -> "on"/"off"/"auto"
+    thinkMode = tv === "1" ? "on" : tv === "0" ? "off" : (tv === "on" || tv === "off" || tv === "auto") ? tv : thinkMode;
+    const cv = localStorage.getItem("ds4:chatThink");          // CHAT: plain on/off toggle
+    chatThink = (cv === "on" || cv === "off") ? cv : chatThink;
+    reflectThink();
     mode = localStorage.getItem("ds4:mode") || "chat";           // restore Chat/Agent
     const savedStick = localStorage.getItem("ds4:stick");        // read Follow before render
     rendering = true; renderChatHistory(); renderAgentHistory(); rendering = false;   // rebuild without firing the Follow auto-toggle
