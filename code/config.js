@@ -24,6 +24,9 @@ window.DS4_CONFIG = {
   agentToolOutputChars: "auto", // cap on tool output the MODEL sees per call (drives prefill cost). "auto" scales
                                 //   to hardware — small on a slow iGPU, large on CUDA; set a number to pin it.
   toolPrefillTargetSec: 8,      // "auto" aims to keep one tool-output prefill under ~this many seconds on this box
+  agentWriteEchoChars: "auto",  // separate, LARGER cap on write_file/edit_file content echoed back into context
+                                //   (the model's own recent work product). "auto" = ~3× the output cap, ≥12k,
+                                //   ≤30% of ctx — keeps typical files whole (fewer re-reads) while bounding the worst case.
 
   // Thinking mode. The switch has 3 positions: "on" (always think), "off" (never), "auto" (a local heuristic
   // skips thinking on trivial turns — the headline feature). Auto is BALANCED + biased to think, because

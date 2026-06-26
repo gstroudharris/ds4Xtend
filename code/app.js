@@ -218,17 +218,17 @@
     abortCtrl = new AbortController();
     const think = { level: chatThink, reason: chatThink, auto: false };   // Chat: manual on/off toggle (no auto heuristic)
     try {
-      let res, level = 0;
+      let res, level = 0, sentMsgs = messages;
       for (;;) {
-        const sendMsgs = fitForSend(null, messages, { level: level, protectFirst: false });   // trim to fit --ctx
-        const mt = maxTokensFor(sumTok(sendMsgs));
+        sentMsgs = fitForSend(null, messages, { level: level, protectFirst: false });   // trim to fit --ctx
+        const mt = maxTokensFor(sumTok(sentMsgs));
         res = await fetch(C.serverUrl + "/v1/chat/completions", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           signal: abortCtrl.signal,
           body: JSON.stringify({
             model: C.model, stream: true, stream_options: { include_usage: true },
-            messages: sendMsgs, ...thinkSpread(think.level),
+            messages: sentMsgs, ...thinkSpread(think.level),
             ...(mt ? { max_tokens: mt } : {}),
           }),
         });
@@ -267,6 +267,7 @@
       messages.push({ role: "assistant", content });
       const tEnd = performance.now();
       const usedTok = finalizeTurnMetrics({ t0, tFirst, tEnd, usage, outTokEst, estPrompt });
+      if (usage && usage.prompt_tokens) calibrateTokenizer(charsOf(sentMsgs), usage.prompt_tokens);   // learn this box's real chars/token
       if (usage) {
         const decSecs = (tEnd - (tFirst == null ? tEnd : tFirst)) / 1000;
         const tps = usage.completion_tokens && decSecs > 0 ? (usage.completion_tokens / decSecs).toFixed(1) : "?";
@@ -407,6 +408,15 @@
   // Trim a tool result to the cap with head+tail + the re-read breadcrumb, applied ON INSERT so the model-visible
   // bytes stay stable across turns (preserves ds4's warm KV-prefix reuse; avoids a later stub forcing a cold re-prefill).
   function capToolOutput(res) { const s = JSON.stringify(res) || ""; const cap = toolCapChars(); return s.length <= cap ? s : stubText(s, cap); }
+  // Separate, LARGER cap for the write_file/edit_file content the model echoes back (its current work product —
+  // usually one recent file). Generous so typical files stay whole (fewer re-reads / less rewrite-from-stub risk),
+  // bounded to ≤30% of the window so one write can't dominate. Scales per box via toolCapChars(). Pin with a number.
+  function writeCapChars() {
+    const cfg = C.agentWriteEchoChars;
+    if (typeof cfg === "number" && cfg > 0) return Math.round(cfg);
+    const hi = Math.floor((currentCtx() || 32768) * 4 * 0.30);   // one write echo never exceeds ~30% of the window
+    return Math.min(hi, Math.max(12000, toolCapChars() * 3));     // ~3× the output cap, ≥12k, capped at hi
+  }
   function learnCtxFromError(txt) {                          // discover the server's ctx from a 400 so trimming self-heals on any box
     const m = /context[^0-9]{0,40}([0-9]{3,})/i.exec(txt || "");
     if (m) { const n = parseInt(m[1], 10); if (n > 256 && n !== serverCtx) { serverCtx = n; if (lastCtxUsed != null) updateContextMeter(lastCtxUsed, false); } }
@@ -443,10 +453,29 @@
 
   /* ---------------- context fitting + agent message queue (keeps long sessions under --ctx) ---------------- */
   const NL2 = String.fromCharCode(10);
+  // Token estimate calibrated to the SERVER's real tokenizer: charsPerTok is learned each turn from
+  // usage.prompt_tokens, so the trim budget tracks dense code (~3.3 ch/tok) instead of a fixed 4 → it
+  // stops landing "just over" the window. tokFromChars() converts a char count to estimated tokens.
+  let charsPerTok = 4;                                     // learned live; clamped to a sane 2.5–4.5 band
+  function tokFromChars(n) { return Math.ceil((n || 0) / charsPerTok); }
+  function charsOf(msgs) {                                 // chars actually sent (content + tool-call args), for calibration
+    let n = 0;
+    for (const m of msgs) {
+      n += (m.content || "").length;
+      if (m.tool_calls) for (const tc of m.tool_calls) { const f = tc.function || {}; n += (f.arguments || "").length + (f.name || "").length; }
+    }
+    return n;
+  }
+  function calibrateTokenizer(sentChars, promptTokens) {  // fold real (chars sent ÷ server prompt_tokens) into charsPerTok
+    if (!promptTokens || promptTokens < 64 || !(sentChars > 0)) return;   // skip tiny/invalid samples
+    const r = sentChars / promptTokens;
+    if (r < 1.5 || r > 8) return;                          // skip outliers (measurement noise / template mismatch)
+    charsPerTok = Math.min(4.5, Math.max(2.5, charsPerTok * 0.7 + r * 0.3));   // EWMA toward the live ratio
+  }
   function tokOf(m) {
     let n = (m.content || "").length;
     if (m.tool_calls) for (const tc of m.tool_calls) { const f = tc.function || {}; n += (f.arguments || "").length + (f.name || "").length; }
-    return Math.ceil(n / 4) + 4;
+    return tokFromChars(n) + 4;
   }
   function sumTok(msgs) { let n = 0; for (const m of msgs) n += tokOf(m); return n; }
   function stubText(s, keepChars) {
@@ -454,6 +483,19 @@
     const head = Math.ceil(keepChars * 0.6), tail = Math.max(0, keepChars - head);
     const cut = s.length - head - tail;
     return s.slice(0, head) + NL2 + "... [" + cut + " chars trimmed to fit the context window - re-read this file/range with read_file offset+limit to restore detail] ..." + NL2 + (tail ? s.slice(s.length - tail) : "");
+  }
+  // Stub the bulk fields (content/find/replace) of a write/edit tool-call's ARGS to `cap`, keeping VALID JSON.
+  // Re-stringifies ONLY if something was actually trimmed, so untouched args keep their exact bytes (stable KV
+  // prefix). Used on insert (generous writeCapChars) and as a fitForSend last-ditch (small cap). Never touches the
+  // args used to EXECUTE the tool — only the in-context echo. Short args (reads, small writes) pass through verbatim.
+  function stubCallArgs(argsStr, cap) {
+    if (!argsStr || argsStr.length <= cap) return argsStr;
+    let a; try { a = JSON.parse(argsStr); } catch { return argsStr; }   // unparseable -> don't risk mangling it
+    let changed = false;
+    for (const k of ["content", "replace", "find"]) {
+      if (typeof a[k] === "string" && a[k].length > cap) { a[k] = stubText(a[k], cap); changed = true; }
+    }
+    return changed ? JSON.stringify(a) : argsStr;
   }
   function wireMsg(m) {
     const o = { role: m.role };
@@ -471,8 +513,8 @@
     if (!ctx) return out;                                  // ctx unknown -> can't fit; rely on the 400-retry
     const reserve = (C.contextReserveTokens || 2048) + level * 1024;
     const safety = (C.contextSafety || 0.9) - level * 0.06;
-    const sysTok = Math.ceil((systemContent || "").length / 4) + 4;
-    const budget = Math.max(512, Math.floor((ctx - reserve) * safety) - sysTok);
+    const sysTok = tokFromChars((systemContent || "").length) + 4;
+    const budget = Math.max(512, Math.floor((ctx - reserve) * safety) - sysTok - (opts.extraTok || 0));
     if (sumTok(out) <= budget) return out;
     const recentKeep = Math.max(2, (C.contextRecentKeep || 6) - level * 2);
     const tailStart = Math.max(0, out.length - recentKeep);
@@ -500,6 +542,15 @@
     }
     for (let i = 0; i < out.length && sumTok(out) > budget; i++) {
       if (out[i].content && out[i].content.length > 400) out[i] = Object.assign({}, out[i], { content: stubText(out[i].content, 400) });
+    }
+    // last-ditch: stub write/edit tool-call ARGS too — the one thing the passes above can't touch — so a pile-up of
+    // recent large writes can never wedge us over --ctx. Only fires when still over budget after everything else.
+    for (let i = 0; i < out.length && sumTok(out) > budget; i++) {
+      if (!out[i].tool_calls) continue;
+      out[i] = Object.assign({}, out[i], { tool_calls: out[i].tool_calls.map((tc) => {
+        const f = tc.function || {}, capped = stubCallArgs(f.arguments || "", stubChars);
+        return capped === (f.arguments || "") ? tc : Object.assign({}, tc, { function: Object.assign({}, f, { arguments: capped }) });
+      }) });
     }
     return out;
   }
@@ -585,6 +636,7 @@
     { type: "function", function: { name: "mkdir", description: "Create a directory (and parents).", parameters: { type: "object", properties: { path: { type: "string" } }, required: ["path"] } } },
     { type: "function", function: { name: "delete", description: "Delete a file or empty directory.", parameters: { type: "object", properties: { path: { type: "string" } }, required: ["path"] } } },
   ];
+  const TOOLS_CHARS = JSON.stringify(TOOLS).length;   // tool-schema bytes sent every agent turn — reserved in the budget so they're not uncounted headroom
   const TOOL_EP = { list_dir: "/tools/list_dir", read_file: "/tools/read_file", write_file: "/tools/write_file", search: "/tools/search", edit_file: "/tools/edit_file", mkdir: "/tools/mkdir", delete: "/tools/delete", tree: "/tools/tree" };
 
   /* ----- folder picker ----- */
@@ -915,13 +967,13 @@
     beginLiveMetrics();
     const liveTimer = setInterval(() => renderLiveMetrics({ t0, tFirst, outTokEst: outTok, estPrompt }), 150);   // live rail tiles during agent turns
     try {
-    let res, level = 0;
+    let res, level = 0, sentMsgs = agentMsgs;
     for (;;) {
-      const sendMsgs = fitForSend(AGENT_SYSTEM, agentMsgs, { level: level, protectFirst: true });   // trim to fit --ctx
-      const mtA = maxTokensFor(sumTok(sendMsgs) + Math.ceil(AGENT_SYSTEM.length / 4));
+      sentMsgs = fitForSend(AGENT_SYSTEM, agentMsgs, { level: level, protectFirst: true, extraTok: tokFromChars(TOOLS_CHARS) });   // trim to fit --ctx (reserve the tool-schema tokens)
+      const mtA = maxTokensFor(sumTok(sentMsgs) + tokFromChars(AGENT_SYSTEM.length) + tokFromChars(TOOLS_CHARS));
       res = await fetch(C.serverUrl + "/v1/chat/completions", {
         method: "POST", headers: { "Content-Type": "application/json" }, signal: ac.signal,
-        body: JSON.stringify({ model: C.model, stream: true, stream_options: { include_usage: true }, tools: TOOLS, tool_choice: "auto", messages: [{ role: "system", content: AGENT_SYSTEM }].concat(sendMsgs), ...thinkSpread(agentThink.level), ...(mtA ? { max_tokens: mtA } : {}) }),
+        body: JSON.stringify({ model: C.model, stream: true, stream_options: { include_usage: true }, tools: TOOLS, tool_choice: "auto", messages: [{ role: "system", content: AGENT_SYSTEM }].concat(sentMsgs), ...thinkSpread(agentThink.level), ...(mtA ? { max_tokens: mtA } : {}) }),
       });
       if (res.ok) break;
       const errTxt = await res.text();
@@ -960,6 +1012,7 @@
     const tEnd = performance.now();
     ui.finalize(content);
     const usedTok = finalizeTurnMetrics({ t0, tFirst, tEnd, usage, outTokEst: outTok, estPrompt });
+    if (usage && usage.prompt_tokens) calibrateTokenizer(AGENT_SYSTEM.length + TOOLS_CHARS + charsOf(sentMsgs), usage.prompt_tokens);   // learn real chars/token (incl. system + tools)
     if (finishReason === "length") noticeTruncation(ui, usedTok);
     if (content) {
       const decSecs = (tEnd - (tFirst == null ? tEnd : tFirst)) / 1000;
@@ -989,7 +1042,7 @@
         const turn = await agentStreamTurn(ac);
         if (agentRunId !== myRun) return;             // Cleared/superseded mid-turn -> don't write back
         const asg = { role: "assistant", content: turn.content || "" };
-        if (turn.toolCalls.length) asg.tool_calls = turn.toolCalls.map((tc) => ({ id: tc.id, type: "function", function: { name: tc.name, arguments: tc.args } }));
+        if (turn.toolCalls.length) asg.tool_calls = turn.toolCalls.map((tc) => ({ id: tc.id, type: "function", function: { name: tc.name, arguments: stubCallArgs(tc.args, writeCapChars()) } }));   // cap the ECHOED file content on insert (byte-stable); execution below still uses the full tc.args
         agentMsgs.push(asg);
         if (!turn.toolCalls.length) break;
         for (const tc of turn.toolCalls) {
