@@ -27,6 +27,8 @@ window.DS4_CONFIG = {
   agentWriteEchoChars: "auto",  // separate, LARGER cap on write_file/edit_file content echoed back into context
                                 //   (the model's own recent work product). "auto" = ~3× the output cap, ≥12k,
                                 //   ≤30% of ctx — keeps typical files whole (fewer re-reads) while bounding the worst case.
+  toolTimeoutMs: 30000,         // hard ceiling on a single tool call (file I/O is bounded, but a wedged backend or
+                                //   pathological scan must not hang the agent loop). Also abortable mid-flight by Stop.
 
   // Thinking mode. The switch has 3 positions: "on" (always think), "off" (never), "auto" (a local heuristic
   // skips thinking on trivial turns — the headline feature). Auto is BALANCED + biased to think, because

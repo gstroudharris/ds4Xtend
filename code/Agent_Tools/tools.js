@@ -23,6 +23,7 @@ window.DS4_AGENT = {
   TOOLS: [],            // OpenAI function defs sent to ds4 each turn as `tools`
   ENDPOINTS: {},        // tool name -> backend HTTP path (plus the built-in `tree`)
   MUTATING: {},         // tool name -> 1 for tools that change the workspace (gated in Ask mode)
+  RISK: {},             // tool name -> risk level ("medium"/"high"); high-risk tools force approval even in Auto
   loaded: false,
 
   // Fetch the live tool contract from the backend registry. The backend (agent_tools.py) auto-discovers
@@ -45,6 +46,7 @@ window.DS4_AGENT = {
     this.TOOLS = tools;
     this.ENDPOINTS = endpoints;
     this.MUTATING = mutating;
+    this.RISK = (p && p.risk && typeof p.risk === "object") ? p.risk : {};   // {name: "high"|"medium"} for above-default tools
     this.loaded = true;
     return this.TOOLS;
   },

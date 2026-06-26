@@ -68,8 +68,10 @@ CTX = types.SimpleNamespace(safe_path=safe_path, workspace=workspace,
 
 
 # ---------------- tool registry (auto-discovered: each tool = a folder with spec.json + tool.py) ----------------
-def load_registry():
-    base = os.path.dirname(os.path.abspath(__file__))
+# spec.json: {"function": {...}, "mutating": bool, "risk": "low"|"medium"|"high"}  (risk optional, default "low")
+# tool.py:   run(args, ctx) [required]  +  validate(args) [optional — raise ValueError on bad/unsafe args]
+def load_registry(base=None):
+    base = base or os.path.dirname(os.path.abspath(__file__))
     reg = {}
     for name in sorted(os.listdir(base)):
         d = os.path.join(base, name)
@@ -84,9 +86,13 @@ def load_registry():
             ms.loader.exec_module(mod)
             if not callable(getattr(mod, "run", None)):
                 raise ValueError("tool.py has no run(args, ctx)")
+            validate = getattr(mod, "validate", None)
             fn = spec.get("function") or {}
             tname = fn.get("name") or name
-            reg[tname] = {"def": fn, "mutating": bool(spec.get("mutating")), "run": mod.run}
+            reg[tname] = {"def": fn, "mutating": bool(spec.get("mutating")),
+                          "risk": (spec.get("risk") or "low"),
+                          "run": mod.run,
+                          "validate": validate if callable(validate) else None}
         except Exception as e:
             print("agent-tools: skipped tool %r: %s" % (name, e), flush=True)
     return reg
@@ -95,10 +101,13 @@ def load_registry():
 REGISTRY = load_registry()
 
 
-def tools_payload():
-    """The model-facing contract the frontend fetches once: OpenAI tool defs + which names mutate."""
-    return {"tools": [{"type": "function", "function": r["def"]} for r in REGISTRY.values()],
-            "mutating": [name for name, r in REGISTRY.items() if r["mutating"]]}
+def tools_payload(reg=None):
+    """The model-facing contract the frontend fetches once: OpenAI tool defs + which names mutate + per-tool risk.
+    `risk` only lists tools above the default ("low"); the frontend forces approval on high-risk tools even in Auto."""
+    reg = REGISTRY if reg is None else reg
+    return {"tools": [{"type": "function", "function": r["def"]} for r in reg.values()],
+            "mutating": [name for name, r in reg.items() if r["mutating"]],
+            "risk": {name: r["risk"] for name, r in reg.items() if r.get("risk") and r["risk"] != "low"}}
 
 
 # ---------------- built-in UI-only endpoints (NOT registry tools) ----------------
@@ -198,6 +207,8 @@ class Handler(BaseHTTPRequestHandler):
                 tool = REGISTRY.get(name)
                 if not tool:
                     return self._json({"error": "unknown tool: %s" % name}, 404)
+                if tool["validate"]:                         # optional hard-constraint check (raises ValueError -> 400)
+                    tool["validate"](b)
                 return self._json(tool["run"](b, CTX))
             return self._json({"error": "not found"}, 404)
         except PermissionError as e:

@@ -20,15 +20,20 @@ Agent_Tools/
 - **`spec.json`** — the model-facing contract:
   ```json
   { "function": { "name": "...", "description": "...", "parameters": { ... } },
-    "mutating": false }
+    "mutating": false,
+    "risk": "low" }
   ```
   `function` is the OpenAI tool definition the model sees. `mutating: true` marks a tool that changes
-  the workspace, so it's gated behind an approval/diff in **Ask** mode.
-- **`tool.py`** — the implementation, exposing one function:
+  the workspace, so it's gated behind an approval/diff in **Ask** mode. `risk` is optional (default
+  `"low"`); `"high"` forces an approval **even in Auto mode** (see *Risky tools* below).
+- **`tool.py`** — the implementation, exposing:
   ```python
-  def run(args, ctx):
+  def run(args, ctx):       # REQUIRED
       ...
-      return { ... }   # a small JSON-able dict
+      return { ... }        # a small JSON-able dict
+
+  def validate(args):       # OPTIONAL — runs before run(); raise ValueError on bad/unsafe args
+      ...
   ```
 
 **Auto-discovery wires everything.** At startup [`agent_tools.py`](agent_tools.py) globs these folders,
@@ -95,6 +100,38 @@ tool result: `PermissionError → 403/denied`, `FileNotFoundError`/`ValueError �
 
 For a mutating tool you *may* also add a nicer diff/preview in `approvalFor()` (in `app.js`) — but it's
 optional: with `"mutating": true`, the generic Ask-mode approval already gates it.
+
+## Risky tools (`execute` and friends)
+
+Before adding anything that runs code, hits the network, or is otherwise irreversible/costly, know the
+boundary: **`ctx.safe_path` confines file paths, but it does NOT confine a subprocess.** A child process
+can touch anything the user can — it escapes the workspace entirely. So for a risky tool, the schema and
+`validate()` *are* the containment, not a backstop. Build it like this:
+
+1. **Model the input so unsafe states are unrepresentable.** Don't take a freeform `command: string`
+   (`"rm -rf /"` is a valid string). Take a `command` **enum** of allowed binaries + an `args` **array**,
+   and never pass it through a shell with string interpolation.
+2. **`"risk": "high"`** in `spec.json` → the frontend forces an approval **every time, even in Auto mode**
+   (a high-risk call shows a `⚠ High-risk` confirmation; it is never auto-run).
+3. **`validate(args)`** in `tool.py` → enforce the hard constraints in code (allowlist, no shell
+   metacharacters, path confinement). It runs before `run()`; raise `ValueError` and the model gets a
+   clean 400 it can correct from. This is *defense in depth* — state the rule in the schema **and** enforce
+   it here, because HITL approval is a UI control and must not be the only gate.
+4. **Bound execution inside `run()`**: a hard timeout, an output cap, and a workspace-confined `cwd`
+   (true OS-level isolation — namespaces/seccomp/a container — is beyond this stdlib sidecar; if you need
+   it, that's a sign the tool belongs in a different layer).
+
+> The current toolset is deliberately *no code execution* — file I/O only. Adding `execute` crosses that
+> line on purpose; do it consciously, with the four guards above.
+
+## Bounded + tested
+
+- **Every tool call has a hard timeout** (`toolTimeoutMs` in `config.js`) and is abortable mid-flight by
+  **Stop** — a wedged or slow tool can't hang the agent loop. Keep `run()` itself bounded too (scan caps,
+  `ctx.MAX_BYTES`), so the backend never relies on the client to stop it.
+- **[`test_tools.py`](test_tools.py)** is the iterative-evaluation backstop (stdlib `unittest`,
+  `python3 test_tools.py`). When you add a tool or a guard, add its success **and** failure cases there —
+  especially anything that must *refuse* (escape attempts, non-unique edits, risky-arg rejection).
 
 ## Best practices (so the model gets it right the first time, every time)
 

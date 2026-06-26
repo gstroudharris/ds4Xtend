@@ -806,16 +806,32 @@
     };
   }
 
-  async function callTool(name, args) {
+  async function callTool(name, args, ac) {
     const ep = toolEp(name);
     if (!ep) return { error: "unknown tool: " + name };
+    // Abort the fetch on EITHER the run's Stop (ac) OR a timeout, so a wedged backend can't hang the loop and
+    // Stop interrupts an in-flight tool call. (ac is optional — non-agent callers still get the timeout.)
+    const ctl = new AbortController();
+    const onAbort = () => ctl.abort();
+    if (ac) { if (ac.signal.aborted) ctl.abort(); else ac.signal.addEventListener("abort", onAbort, { once: true }); }
+    const ms = C.toolTimeoutMs || 30000;
+    const timer = setTimeout(() => ctl.abort(new DOMException("timeout", "TimeoutError")), ms);
     try {
-      const r = await fetch(C.agentUrl + ep, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(args || {}) });
+      const r = await fetch(C.agentUrl + ep, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(args || {}), signal: ctl.signal });
       return await r.json();
-    } catch (e) { return { error: "agent-tools unreachable: " + (e.message || e) }; }
+    } catch (e) {
+      if (ac && ac.signal.aborted) return { error: "stopped by user" };
+      if (e && (e.name === "TimeoutError" || ctl.signal.reason && ctl.signal.reason.name === "TimeoutError")) return { error: "tool '" + name + "' timed out after " + Math.round(ms / 1000) + "s" };
+      return { error: "agent-tools unreachable: " + (e.message || e) };
+    } finally {
+      clearTimeout(timer);
+      if (ac) ac.signal.removeEventListener("abort", onAbort);
+    }
   }
 
   const isMutating = (name) => !!(AG.MUTATING || {})[name];   // tools that need approval in Ask mode — set live by AG.load()
+  const riskOf     = (name) => (AG.RISK || {})[name] || "low"; // per-tool risk from spec.json (default "low")
+  const isHighRisk = (name) => riskOf(name) === "high";        // high-risk -> HITL approval ALWAYS, even in Auto mode
   function askConfirm(title, body) {
     return new Promise((resolve) => {
       const box = document.createElement("div"); box.className = "approve";
@@ -830,14 +846,14 @@
       box.querySelector(".approve__no").addEventListener("click", () => done(false));
     });
   }
-  async function approvalFor(name, args) {
+  async function approvalFor(name, args, ac) {
     if (name === "write_file") {
-      const cur = await callTool("read_file", { path: args.path });
+      const cur = await callTool("read_file", { path: args.path }, ac);
       const exists = cur && typeof cur.content === "string";
       return { title: (exists ? "Overwrite " : "Create ") + args.path, body: args.content || "" };
     }
     if (name === "edit_file") {
-      const cur = await callTool("read_file", { path: args.path });
+      const cur = await callTool("read_file", { path: args.path }, ac);
       const old = cur && typeof cur.content === "string" ? cur.content : "";
       const hits = args.find ? old.split(args.find).length - 1 : 0;
       const next = args.find ? old.split(args.find).join(args.replace || "") : old;
@@ -848,14 +864,15 @@
     return { title: name, body: JSON.stringify(args) };
   }
   async function execToolCall(name, args, card, ac) {
-    if (isMutating(name) && agentMode === "ask") {
+    // High-risk tools (e.g. a future `execute`) always require approval; mutating tools require it in Ask mode.
+    if (isHighRisk(name) || (isMutating(name) && agentMode === "ask")) {
       let ok;
-      if (card.approve) ok = await card.approve((name === "edit_file" ? "edit to " : "write to ") + args.path);  // inline on the live preview
-      else { const a = await approvalFor(name, args); ok = await askConfirm(a.title, a.body); }
+      if (card.approve && !isHighRisk(name)) ok = await card.approve((name === "edit_file" ? "edit to " : "write to ") + args.path);  // inline on the live write-preview
+      else { const a = await approvalFor(name, args, ac); const title = isHighRisk(name) ? "⚠ High-risk — " + a.title : a.title; ok = await askConfirm(title, a.body); }
       if (!ok) { card.result({ error: "declined by user" }, "skip"); return { error: "user declined the " + name }; }
     }
     if (ac && ac.signal.aborted) { card.result({ error: "stopped by user" }, "skip"); return { error: "stopped by user" }; }   // Stop pressed during approval
-    const res = await callTool(name, args);
+    const res = await callTool(name, args, ac);
     let display = res;
     if (!(res && res.error)) {
       if (name === "mkdir") display = { content: "📁 created " + (res.path || args.path) };
