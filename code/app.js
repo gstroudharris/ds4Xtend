@@ -590,7 +590,7 @@
   }
   function maybeNudge() {
     const ctx = currentCtx(); if (!ctx) return;
-    const used = sumTok(agentMsgs) + Math.ceil(AGENT_SYSTEM.length / 4);
+    const used = sumTok(agentMsgs) + tokFromChars(AGENT_SYSTEM.length) + tokFromChars(toolsChars());   // match the force-clear accounting (learned chars/tok + tool-schema bytes) so wrap-up notices don't fire late
     const pct = used / ctx, warn = C.contextWarnPct || 0.8, danger = C.contextDangerPct || 0.92;
     if (pct >= danger && nudgeState < 2) {
       nudgeState = 2;

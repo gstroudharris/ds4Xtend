@@ -54,10 +54,14 @@ window.DS4_CONFIG = {
   diffLogMax: 200,              // turns of the difficulty log kept in localStorage (seeds future learned weighting)
 
   contextWarnPct: 0.80,         // agent gets a "wrap up" notice at this fill
-  contextDangerPct: 0.92,       // agent gets a stronger "stop exploring" notice at this fill
+  contextDangerPct: 0.85,       // stronger "stop exploring, finish now" notice (lowered to stay below the force-clear)
   // On Loop, if the model never calls finish_run, these force a context clear so it can't stay pinned full
-  // (re-prefilling huge chunks every turn). The model still gets its wrap-up window first (danger < force).
-  contextForceClearPct: 0.97,   // hard ceiling: cross this fill -> the loop force-clears (carrying a summary)
+  // (re-prefilling huge chunks every turn). Cleared EARLY on purpose: this small model rarely self-finishes
+  // (eval: finish_done misses single-shot — it keeps verifying instead of terminating), so the loop leans on this
+  // net rather than the model's judgment. On the slow box every turn spent near-full costs a big prefill, so
+  // clearing at 0.90 (was 0.97) trades a little working room per iteration for much less prefill thrash. The model
+  // still gets its warn(0.80) -> danger(0.85) wrap-up windows first, so the invariant danger < force holds.
+  contextForceClearPct: 0.90,   // hard ceiling: cross this fill -> the loop force-clears (carrying a summary)
   contextForceClearTurns: 2,    // OR force-clear after the danger nudge persists this many turns without a finish
   // maxOutputTokens: 2048,     // optional hard output cap (default: omit -> server default, auto-clamped to fit)
   serverCtx: 32768,             // conservative fallback (the small-box limit) used ONLY when the sidecar can't
