@@ -27,8 +27,9 @@ Endpoints
   POST /tools/<name> {...args}  -> run a registered tool (sandboxed)
   POST /tools/tree   {path}     -> file tree for the UI (built-in; not a model tool)
 """
-import argparse, importlib.util, json, os, signal, subprocess, threading, time, types
+import argparse, atexit, importlib.util, json, os, signal, subprocess, tempfile, threading, time, types
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import _jobs
 
 _lock = threading.Lock()
 _ws = {"root": None}                 # locked workspace root (absolute realpath) or None
@@ -86,15 +87,10 @@ def _wrap(argv):
     return argv
 
 
-def run_process(spec, timeout=None):
-    """Run a command and return a captured result dict. `spec`:
-         {"argv": [str, ...]}                 -> run directly, NO shell
-         {"shell": True, "command": "..."}    -> run via ['bash','-c', command]  (pipes/&&/redirects)
-       optional "cwd" (workspace-relative). cwd is confined to the workspace via safe_path. Never raises on a
-       non-zero exit (that's a normal result); raises ValueError on a malformed spec and PermissionError if cwd
-       escapes the workspace. On timeout the whole process group is killed and timed_out=True is returned."""
-    ws = workspace()
-    if not ws:
+def resolve_command(spec):
+    """Validate + resolve a command spec into (argv, shown, cwd). Shared by foreground run_process and the
+    background JobManager so both apply the SAME rules. cwd is confined to the workspace via safe_path."""
+    if not workspace():
         raise PermissionError("no workspace selected")
     if spec.get("shell"):
         cmd = spec.get("command")
@@ -109,6 +105,15 @@ def run_process(spec, timeout=None):
     cwd = safe_path(spec.get("cwd") or "")             # confine the working directory to the workspace
     if not os.path.isdir(cwd):
         raise ValueError("cwd is not a directory: %r" % (spec.get("cwd") or "."))
+    return argv, shown, cwd
+
+
+def run_process(spec, timeout=None):
+    """Run a FOREGROUND command to completion and return a captured result dict (blocks; for long-lived
+       processes use the JobManager / execute background:true). Never raises on a non-zero exit (that's a
+       normal result); raises ValueError on a malformed spec and PermissionError if cwd escapes the workspace.
+       On timeout the whole process group is killed and timed_out=True is returned."""
+    argv, shown, cwd = resolve_command(spec)
     t0, timed_out = time.time(), False
     proc = subprocess.Popen(_wrap(argv), cwd=cwd, env=_scrubbed_env(),
                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
@@ -161,11 +166,22 @@ def read_commands():
     return out
 
 
+# Per-request thread-local: the dispatch stashes the owning agent run id (X-DS4-Run-Id header) here so a
+# backgrounded process can be tagged for run-scoped cleanup. (ThreadingHTTPServer = one thread per request.)
+_req = threading.local()
+
+
+def current_run():
+    return getattr(_req, "run_id", None)
+
+
 # Handed to every tool's run(args, ctx). Tools MUST resolve paths through ctx.safe_path — that call IS the
-# sandbox lock. ctx.run_process executes commands (cwd-confined); ctx.read_commands reads the .ds4 manifest.
+# sandbox lock. ctx.run_process runs a foreground command; ctx.jobs is the background JobManager (set in main());
+# ctx.resolve_command validates a command spec; ctx.current_run() is the owning agent run for run-scoping.
 CTX = types.SimpleNamespace(safe_path=safe_path, workspace=workspace,
                             MAX_BYTES=MAX_BYTES, MAX_ENTRIES=MAX_ENTRIES,
-                            run_process=run_process, read_commands=read_commands)
+                            run_process=run_process, read_commands=read_commands,
+                            resolve_command=resolve_command, current_run=current_run, jobs=None)
 
 
 # ---------------- tool registry (auto-discovered: each tool = a folder with spec.json + tool.py) ----------------
@@ -268,7 +284,7 @@ class Handler(BaseHTTPRequestHandler):
     def _cors(self):
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type, X-DS4-Run-Id")
 
     def handle(self):
         try:
@@ -318,9 +334,12 @@ class Handler(BaseHTTPRequestHandler):
         from urllib.parse import urlparse
         path = urlparse(self.path).path
         b = self._body()
+        _req.run_id = self.headers.get("X-DS4-Run-Id") or None    # tag spawned jobs with the owning agent run
         try:
             if path == "/workspace":
                 return self._json({"root": set_workspace(b.get("path"))})
+            if path == "/jobs/cleanup":                     # frontend: reap a run's background processes at run end
+                return self._json(CTX.jobs.cleanup_run(b.get("run_id")) if CTX.jobs else {"reaped": []})
             if path == "/tools/tree":                       # built-in UI endpoint (not a model tool)
                 return self._json(t_tree(b.get("path", "")))
             if path.startswith("/tools/"):                  # generic registry dispatch
@@ -356,8 +375,19 @@ def main():
             set_workspace(args.workspace)
         except ValueError as e:
             print("agent-tools: bad --workspace:", e, flush=True)
+    # Background-process manager: persist file is per-port so two backends don't fight; sweep-on-start reaps
+    # survivors of a previously SIGKILLed backend. Cleanup hooks guarantee jobs die when THIS backend exits.
+    persist = os.path.join(tempfile.gettempdir(), "ds4_jobs_%d.json" % args.port)
+    CTX.jobs = _jobs.JobManager(persist, _scrubbed_env)
+    atexit.register(CTX.jobs.shutdown)
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        signal.signal(sig, lambda *a: (CTX.jobs.shutdown(), os._exit(0)))
     print(f"ds4 agent-tools on http://{args.host}:{args.port}  workspace={workspace()}  tools={list(REGISTRY)}", flush=True)
-    ThreadingHTTPServer((args.host, args.port), Handler).serve_forever()
+    srv = ThreadingHTTPServer((args.host, args.port), Handler)
+    try:
+        srv.serve_forever()
+    finally:
+        CTX.jobs.shutdown()
 
 
 if __name__ == "__main__":

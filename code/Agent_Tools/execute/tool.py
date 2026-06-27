@@ -18,8 +18,17 @@ def validate(args):
         argv = args.get("argv")
         if not (isinstance(argv, list) and argv and all(isinstance(a, str) for a in argv)):
             raise ValueError("provide 'argv' as a non-empty array of strings, or set shell=true with 'command'")
+    if args.get("background") and not (args.get("goal") or "").strip():
+        raise ValueError("background:true requires a 'goal' (state why the process is being started)")
 
 
 def run(args, ctx):
-    return ctx.run_process({"argv": args.get("argv"), "shell": bool(args.get("shell")),
-                            "command": args.get("command"), "cwd": args.get("cwd")})
+    spec = {"argv": args.get("argv"), "shell": bool(args.get("shell")),
+            "command": args.get("command"), "cwd": args.get("cwd")}
+    if args.get("background"):                       # long-lived process: return a handle, don't block
+        argv, shown, cwd = ctx.resolve_command(spec)
+        return ctx.jobs.spawn(argv, cwd, shown, goal=args.get("goal"),
+                              run_id=ctx.current_run(), scope=(args.get("scope") or "run"),
+                              max_lifetime=args.get("max_lifetime_sec"),
+                              ready_when=args.get("ready_when"))
+    return ctx.run_process(spec)                     # foreground: run to completion

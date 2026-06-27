@@ -1,14 +1,19 @@
 {
   "function": {
     "name": "execute",
-    "description": "Run a command in the workspace and return its exit code, stdout and stderr. High-risk (approved by the human in Ask mode; runs autonomously in Auto). Prefer run_command for the project's declared test/build/lint steps.",
+    "description": "Run a command in the workspace and return its exit code, stdout and stderr. High-risk (approved by the human in Ask mode; runs autonomously in Auto). Prefer run_command for the project's declared test/build/lint steps. For a LONG-RUNNING process (a server/watcher), set background:true with a goal — you get a job_id back immediately; poll it with process_output and stop it with stop_process when done.",
     "parameters": {
       "type": "object",
       "properties": {
         "argv": { "type": "array", "items": { "type": "string" }, "description": "Command as an array, no shell — e.g. [\"python3\", \"script.py\"]. Use this OR shell+command." },
         "shell": { "type": "boolean", "description": "If true, run `command` through bash -c (enables pipes, &&, redirects, globs)." },
         "command": { "type": "string", "description": "Shell command string; only used when shell is true." },
-        "cwd": { "type": "string", "description": "Optional working directory, relative to the workspace root (defaults to the root)." }
+        "cwd": { "type": "string", "description": "Optional working directory, relative to the workspace root (defaults to the root)." },
+        "background": { "type": "boolean", "description": "Run as a long-lived BACKGROUND process: returns a job_id immediately instead of waiting. Requires goal. It is auto-killed at its deadline, when this run ends, or if you stop polling it." },
+        "goal": { "type": "string", "description": "Required when background: WHY the process is running (e.g. 'serve the app on :3000 so I can run the e2e tests')." },
+        "ready_when": { "type": "object", "description": "Optional readiness gate for background — the call returns once it holds: {\"port\": 3000} | {\"log\": \"<regex>\"} | {\"http\": \"<url>\"}." },
+        "max_lifetime_sec": { "type": "integer", "description": "Optional hard lifetime for a background process (seconds; default 600, max 7200). Killed at this deadline no matter what." },
+        "scope": { "type": "string", "enum": ["run", "session"], "description": "Background lifetime scope: 'run' (default — killed when this agent run ends) or 'session' (survives across runs; you must stop it)." }
       }
     }
   },

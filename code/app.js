@@ -808,6 +808,15 @@
         let txt;
         if (typeof res === "string") txt = res.length > 4000 ? res.slice(0, 4000) + "\n…(truncated)" : res;   // already-stubbed tool text on history re-render (capped result isn't valid JSON)
         else if (res && res.error) txt = "error: " + res.error;
+        else if (res && Array.isArray(res.processes)) txt = res.processes.map((p) => p.status + " · " + p.job_id + " — " + p.goal + " (" + p.age_sec + "s, expires in " + p.expires_in_sec + "s)").join("\n") || "(no background processes)";
+        else if (res && res.job_id) {                              // background process: execute bg / process_output / stop_process
+          const bits = ["⚙ " + res.status + " · " + res.job_id + (res.pid ? " (pid " + res.pid + ")" : "")];
+          if (res.goal) bits.push("goal: " + res.goal);
+          if (res.ready !== undefined && res.ready !== null) bits.push("ready: " + res.ready);
+          if (res.stdout) bits.push(res.stdout);
+          if (res.stderr) bits.push("[stderr]\n" + res.stderr);
+          txt = bits.join("\n"); if (txt.length > 4000) txt = txt.slice(0, 4000) + "\n…(truncated)";
+        }
         else if (res && (typeof res.stdout === "string" || res.timed_out || res.exit_code !== undefined)) {   // execute / run_command
           const head = res.timed_out ? "⏱ timed out" : "exit " + (res.exit_code == null ? "?" : res.exit_code);
           const parts = [head + (res.duration_sec != null ? " · " + res.duration_sec + "s" : "") + (res.command ? " · " + res.command : "")];
@@ -851,7 +860,7 @@
     const ms = (name === "execute" || name === "run_command") ? (C.executeTimeoutMs || 130000) : (C.toolTimeoutMs || 30000);   // commands may run test suites/builds
     const timer = setTimeout(() => ctl.abort(new DOMException("timeout", "TimeoutError")), ms);
     try {
-      const r = await fetch(C.agentUrl + ep, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(args || {}), signal: ctl.signal });
+      const r = await fetch(C.agentUrl + ep, { method: "POST", headers: { "Content-Type": "application/json", "X-DS4-Run-Id": String(agentRunId) }, body: JSON.stringify(args || {}), signal: ctl.signal });   // tag spawned background jobs with the owning run
       return await r.json();
     } catch (e) {
       if (ac && ac.signal.aborted) return { error: "stopped by user" };
@@ -1124,6 +1133,7 @@
     } catch (e) {
       if (e.name !== "AbortError" && agentRunId === myRun) { agError(String(e.message || e)); loopErrored = true; }
     } finally {
+      fetch(C.agentUrl + "/jobs/cleanup", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ run_id: String(myRun) }) }).catch(() => {});   // reap this run's run-scoped background processes
       if (agentRunId === myRun) { agentBusy = false; setSendStop(false); agentAbort = null; saveAgent(); logFinishTurn("agent"); }
     }
   }

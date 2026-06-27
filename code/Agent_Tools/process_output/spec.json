@@ -1,0 +1,15 @@
+{
+  "function": {
+    "name": "process_output",
+    "description": "Read a background process's stdout/stderr and current status by job_id. Polling also RENEWS its lease — keep polling while you still need it; stop polling (or call stop_process) and it is reaped.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "job_id": { "type": "string", "description": "The job_id returned by execute background:true." },
+        "tail": { "type": "integer", "description": "Optional: return only the last N lines of each stream." }
+      },
+      "required": ["job_id"]
+    }
+  },
+  "mutating": false
+}

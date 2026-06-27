@@ -1,0 +1,8 @@
+{
+  "function": {
+    "name": "list_processes",
+    "description": "List the background processes started with execute (job_id, goal, status, age, when it expires). Use it to see what is still running.",
+    "parameters": { "type": "object", "properties": {} }
+  },
+  "mutating": false
+}

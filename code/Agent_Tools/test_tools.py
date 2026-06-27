@@ -258,9 +258,10 @@ class TestRegistry(unittest.TestCase):
     """Auto-discovery + the risk/validate extension + broken-folder resilience."""
 
     FILE_TOOLS = ["delete", "edit_file", "list_dir", "mkdir", "read_file", "search", "write_file"]
+    EXEC_TOOLS = ["execute", "run_command", "list_processes", "process_output", "stop_process"]
 
     def test_registry_has_file_tools_plus_execution(self):
-        self.assertEqual(sorted(A.REGISTRY), sorted(self.FILE_TOOLS + ["execute", "run_command"]))
+        self.assertEqual(sorted(A.REGISTRY), sorted(self.FILE_TOOLS + self.EXEC_TOOLS))
         for name in self.FILE_TOOLS:
             r = A.REGISTRY[name]
             self.assertTrue(callable(r["run"]))
@@ -272,9 +273,9 @@ class TestRegistry(unittest.TestCase):
 
     def test_payload_shape(self):
         p = A.tools_payload()                             # default registry, no .ds4 manifest in CWD
-        self.assertEqual(len(p["tools"]), len(self.FILE_TOOLS) + 2)
+        self.assertEqual(len(p["tools"]), len(self.FILE_TOOLS) + len(self.EXEC_TOOLS))
         self.assertEqual(sorted(p["mutating"]), ["delete", "edit_file", "execute", "mkdir", "run_command", "write_file"])
-        self.assertEqual(p["risk"], {"execute": "high"})  # only execute is above default risk
+        self.assertEqual(p["risk"], {"execute": "high"})  # only execute is above default risk (process tools are low)
 
     def _fixture_dir(self):
         base = tempfile.mkdtemp(prefix="ds4reg_")

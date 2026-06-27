@@ -16,7 +16,9 @@ window.DS4_AGENT = {
     "When writing a file, provide its full new contents. When done, briefly summarize your changes. " +
     "To run tests, builds, or scripts: prefer run_command for the project's declared steps; use execute for " +
     "ad-hoc commands (in Ask mode execute asks the user to approve; in Auto it runs autonomously). Read command output and " +
-    "fix any failures before continuing. " +
+    "fix any failures before continuing. For a server or other long-running process, use execute with background:true " +
+    "and a goal, poll it with process_output, and stop_process as soon as you're done — background processes are " +
+    "auto-cleaned up when the run ends, but stop them yourself when the goal is met. " +
     "Context is limited: read large files in ranges with read_file offset/limit instead of whole, and note that " +
     "older tool outputs may be trimmed to fit - re-read the specific range you need. If you get an automatic " +
     "context notice, wrap up and summarize promptly.",

@@ -1,0 +1,12 @@
+{
+  "function": {
+    "name": "stop_process",
+    "description": "Stop a background process by job_id (SIGTERM then SIGKILL on its whole process group). Call this as soon as you no longer need the process — don't leave it running.",
+    "parameters": {
+      "type": "object",
+      "properties": { "job_id": { "type": "string", "description": "The job_id to stop." } },
+      "required": ["job_id"]
+    }
+  },
+  "mutating": false
+}

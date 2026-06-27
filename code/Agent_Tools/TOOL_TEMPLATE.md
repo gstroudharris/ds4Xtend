@@ -143,6 +143,22 @@ A workspace declares pre-vetted commands a human trusts the agent to run:
 Each entry is `{argv:[...]}` **or** `{shell:"..."}`, plus optional `description` and `cwd`. The names are
 surfaced to the model (injected into `run_command`'s description + the system note) and to the UI.
 
+### Background processes — `execute background:true` + the JobManager (`_jobs.py`)
+
+For a long-lived process (server/watcher), `execute background:true` (a required `goal`, optional
+`ready_when`/`scope`/`max_lifetime_sec`) returns a `job_id` + `pid` immediately. The agent polls with
+`process_output`, lists with `list_processes`, and stops with `stop_process`. The frontend tags each call
+with an `X-DS4-Run-Id` header so jobs are owned by the agent run.
+
+**Cleanup never depends on the agent remembering** — [`_jobs.py`](_jobs.py) reaps a process the moment ANY
+layer fires (whichever first): process-group `killpg` · wall-clock deadline · **lease** (a run-scoped job
+dies if the agent stops polling) · run-end cleanup (`POST /jobs/cleanup`) · backend `atexit`/SIGTERM ·
+start-up sweep of a SIGKILLed backend (PID-reuse-safe via `/proc` start-time) · kernel `PR_SET_PDEATHSIG` +
+`RLIMIT_CPU`. A process that `setsid`s a daemon out of the group is still caught by an **env-marker `/proc`
+sweep** (`DS4_JOB`/`DS4_OWNER`, inherited by descendants). The one residual: a child that scrubs its own env
+(`env -i`) AND `setsid`s away — only a cgroup or PID-namespace closes that, which is the job of the
+`_wrap()` hook (bubblewrap) if you ever need it. `test_jobs.py` exercises every layer, including the escapee.
+
 ## Bounded + tested
 
 - **Every tool call has a hard timeout** (`toolTimeoutMs`; `executeTimeoutMs` for commands) and is abortable
