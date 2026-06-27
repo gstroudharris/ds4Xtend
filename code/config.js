@@ -30,6 +30,13 @@ window.DS4_CONFIG = {
   toolTimeoutMs: 30000,         // hard ceiling on a single tool call (file I/O is bounded, but a wedged backend or
                                 //   pathological scan must not hang the agent loop). Also abortable mid-flight by Stop.
 
+  // Transient backend errors (e.g. ROCm "prefill state reset failed", any HTTP 5xx/429). A single one would
+  // otherwise kill a whole looping agent run; instead the frontend retries the SAME request a few times with
+  // abort-aware exponential backoff before surfacing it. Genuine 4xx and user-Stop (AbortError) are never retried.
+  transientRetries: 3,          // max retries per turn on a transient backend failure (0 disables)
+  transientBackoffMs: 400,      // base backoff; doubles each retry (400 → 800 → 1600 …)
+  transientBackoffCapMs: 2000,  // ceiling on a single backoff wait
+
   // Thinking mode. The switch has 3 positions: "on" (always think), "off" (never), "auto" (a local heuristic
   // skips thinking on trivial turns — the headline feature). Auto is BALANCED + biased to think, because
   // under-thinking a hard task is the costly, unrecoverable error while over-thinking only wastes time.

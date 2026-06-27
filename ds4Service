@@ -375,7 +375,7 @@ printf '    agent-tools '
 if wait_http "http://127.0.0.1:$AGENT_PORT/healthz" 10; then echo; ok "agent-tools online (sandboxed file I/O for Agent mode)"; else echo; warn "agent-tools slow/own port busy"; fi
 
 WEB_LOG="$RUN_DIR/frontend.log"
-( cd "$CODE_DIR" && exec python3 -m http.server "$WEB_PORT" ) > "$WEB_LOG" 2>&1 &
+( cd "$CODE_DIR" && exec python3 "$CODE_DIR/serve.py" --port "$WEB_PORT" ) > "$WEB_LOG" 2>&1 &
 register "ds4Frontend (web)" "$!"
 printf '    frontend '; wait_http "http://127.0.0.1:$WEB_PORT/index.html" 10 && { printf '\n'; ok "frontend online"; } || { printf '\n'; warn "frontend slow/own port busy"; }
 

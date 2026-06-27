@@ -136,6 +136,25 @@
   let loopMode = false, looping = false, loopPrompt = "", loopErrored = false;   // Send/Loop toggle
   let abortCtrl = null;
 
+  // --- transient backend-error retry (e.g. ROCm "prefill state reset failed") ---
+  // A single backend 5xx/429 must not kill a looping run. Both the chat and agent fetch loops retry the SAME
+  // request a few times with abort-aware exponential backoff before surfacing the error. Genuine 4xx (client
+  // errors) and user-Stop (AbortError) are NEVER retried. Shared by runStream() and agentStreamTurn().
+  const TRANSIENT_TRIES = C.transientRetries != null ? C.transientRetries : 3;
+  function isTransientErr(status, txt) {
+    return status >= 500 || status === 429 || /state reset|prefill|backend/i.test(txt || "");
+  }
+  function backoffSleep(tries, signal) {                 // abort-aware: Stop interrupts the wait immediately
+    const base = C.transientBackoffMs || 400, cap = C.transientBackoffCapMs || 2000;
+    const ms = Math.min(cap, base * Math.pow(2, tries - 1));
+    return new Promise((resolve, reject) => {
+      if (signal && signal.aborted) return reject(new DOMException("aborted", "AbortError"));
+      const t = setTimeout(() => { if (signal) signal.removeEventListener("abort", onAbort); resolve(); }, ms);
+      function onAbort() { clearTimeout(t); reject(new DOMException("aborted", "AbortError")); }
+      if (signal) signal.addEventListener("abort", onAbort, { once: true });
+    });
+  }
+
   let stick = true, rendering = false;
   const stickToggle = $("stickToggle");
   function reflectStick() { stickToggle.classList.toggle("is-on", stick); stickToggle.textContent = stick ? "↓ Following" : "↓ Follow"; }
@@ -220,7 +239,7 @@
     abortCtrl = new AbortController();
     const think = { level: chatThink, reason: chatThink, auto: false };   // Chat: manual on/off toggle (no auto heuristic)
     try {
-      let res, level = 0, sentMsgs = messages;
+      let res, level = 0, tries = 0, sentMsgs = messages;
       for (;;) {
         sentMsgs = fitForSend(null, messages, { level: level, protectFirst: false });   // trim to fit --ctx
         const mt = maxTokensFor(sumTok(sentMsgs));
@@ -237,6 +256,10 @@
         if (res.ok) break;
         const errTxt = await res.text();
         if (res.status === 400 && /context|too long|exceed|maximum/i.test(errTxt) && level < 2) { learnCtxFromError(errTxt); level++; continue; }
+        if (isTransientErr(res.status, errTxt) && tries < TRANSIENT_TRIES) {   // transient backend blip (e.g. ROCm reset) — retry the same request, don't fail the turn
+          tries++; toast("Backend hiccup — retrying… (" + tries + "/" + TRANSIENT_TRIES + ")");
+          await backoffSleep(tries, abortCtrl.signal); continue;
+        }
         throw new Error("HTTP " + res.status + " - " + errTxt.slice(0, 180));
       }
       const reader = res.body.getReader();
@@ -782,7 +805,8 @@
         stateEl.textContent = kind === "ok" ? "done" : kind;
         stateEl.className = "tcall__state tcall__state--" + (kind === "ok" ? "ok" : kind === "error" ? "err" : "skip");
         let txt;
-        if (res && res.error) txt = "error: " + res.error;
+        if (typeof res === "string") txt = res.length > 4000 ? res.slice(0, 4000) + "\n…(truncated)" : res;   // already-stubbed tool text on history re-render (capped result isn't valid JSON)
+        else if (res && res.error) txt = "error: " + res.error;
         else if (res && Array.isArray(res.entries)) txt = res.entries.map((e) => (e.type === "dir" ? "📁 " : "📄 ") + e.name).join("\n") || "(empty)";
         else if (res && Array.isArray(res.matches)) txt = (res.matches.map((m) => m.file + ":" + m.line + ": " + m.text).join("\n") || "(no matches)") + (res.truncated ? "\n…(truncated)" : "");
         else if (res && typeof res.content === "string") txt = res.content.length > 4000 ? res.content.slice(0, 4000) + "\n…(truncated)" : res.content;
@@ -974,7 +998,7 @@
     beginLiveMetrics();
     const liveTimer = setInterval(() => renderLiveMetrics({ t0, tFirst, outTokEst: outTok, estPrompt }), 150);   // live rail tiles during agent turns
     try {
-    let res, level = 0;
+    let res, level = 0, tries = 0;
     for (;;) {
       const toolsChrs = toolsChars();
       sentMsgs = fitForSend(AGENT_SYSTEM, agentMsgs, { level: level, protectFirst: true, extraTok: tokFromChars(toolsChrs) });   // trim to fit --ctx (reserve the tool-schema tokens)
@@ -986,6 +1010,10 @@
       if (res.ok) break;
       const errTxt = await res.text();
       if (res.status === 400 && /context|too long|exceed|maximum/i.test(errTxt) && level < 2) { learnCtxFromError(errTxt); level++; continue; }   // learn ctx + compact harder + retry
+      if (isTransientErr(res.status, errTxt) && tries < TRANSIENT_TRIES) {   // transient backend blip (e.g. ROCm "prefill state reset failed") — retry, don't kill the loop
+        tries++; toast("Backend hiccup — retrying… (" + tries + "/" + TRANSIENT_TRIES + ")");
+        await backoffSleep(tries, ac.signal); continue;
+      }
       throw new Error("HTTP " + res.status + " - " + errTxt.slice(0, 180));
     }
     const reader = res.body.getReader(), dec = new TextDecoder(); let buf = "";
@@ -1256,7 +1284,7 @@
   function renderAgentHistory() {
     agentMessagesEl.innerHTML = "";
     const results = {};
-    for (const m of agentMsgs) if (m.role === "tool") { try { results[m.tool_call_id] = JSON.parse(m.content); } catch (e) { results[m.tool_call_id] = { error: "unparseable result" }; } }
+    for (const m of agentMsgs) if (m.role === "tool") { try { results[m.tool_call_id] = JSON.parse(m.content); } catch (e) { results[m.tool_call_id] = m.content; } }   // a stubbed/capped result is plain text, not JSON — keep it as text, not a fake error
     for (const m of agentMsgs) {
       if (m.role === "user") { agUser(m.content); }
       else if (m.role === "assistant") {
