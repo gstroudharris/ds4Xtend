@@ -2,7 +2,7 @@
   "function": {
     "name": "mkdir",
     "description": "Create a directory (and parents).",
-    "parameters": { "type": "object", "properties": { "path": { "type": "string" } }, "required": ["path"] }
+    "parameters": { "type": "object", "properties": { "path": { "type": "string", "description": "Directory path relative to the workspace root; parent directories are created." } }, "required": ["path"] }
   },
   "mutating": true
 }

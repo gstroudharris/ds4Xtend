@@ -9,7 +9,7 @@ def run(args, ctx):
     if not root:
         raise PermissionError("no workspace selected")
     if not (query or "").strip():
-        raise ValueError("empty query")
+        raise ValueError("empty query — provide a non-empty 'query' substring to search for")
     base = ctx.safe_path(rel)
     hits, scanned = [], 0
     for dirpath, dirnames, filenames in os.walk(base):
@@ -17,6 +17,7 @@ def run(args, ctx):
         for fn in filenames:
             if len(hits) >= 200 or scanned >= 4000:
                 break
+            scanned += 1                       # count every file inspected so the budget actually bounds traversal
             fp = os.path.join(dirpath, fn)
             try:
                 if os.path.getsize(fp) > ctx.MAX_BYTES:
@@ -24,7 +25,6 @@ def run(args, ctx):
                 rp = os.path.realpath(fp)
                 if rp != root and not rp.startswith(root + os.sep):
                     continue
-                scanned += 1
                 with open(fp, "r", encoding="utf-8") as f:
                     for ln, line in enumerate(f, 1):
                         if query in line:
@@ -34,4 +34,8 @@ def run(args, ctx):
                                 break
             except (OSError, UnicodeDecodeError):
                 continue
-    return {"query": query, "matches": hits, "truncated": len(hits) >= 200}
+        if len(hits) >= 200 or scanned >= 4000:
+            break                              # stop walking once a budget is spent (don't traverse the rest of the tree)
+    # truncated reflects EITHER cap: the 200-hit cap or the 4000-file scan budget
+    return {"query": query, "matches": hits, "scanned": scanned,
+            "truncated": len(hits) >= 200 or scanned >= 4000}

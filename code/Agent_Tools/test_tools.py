@@ -23,7 +23,8 @@ import agent_tools as A
 def make_ctx(max_bytes=A.MAX_BYTES, max_entries=A.MAX_ENTRIES):
     """A ctx like the server's CTX, but tests can shrink the caps to exercise the limits cheaply."""
     return types.SimpleNamespace(safe_path=A.safe_path, workspace=A.workspace,
-                                 MAX_BYTES=max_bytes, MAX_ENTRIES=max_entries)
+                                 MAX_BYTES=max_bytes, MAX_ENTRIES=max_entries,
+                                 run_process=A.run_process, read_commands=A.read_commands)
 
 
 def run(name, args, ctx):
@@ -256,18 +257,24 @@ class TestDelete(ToolBase):
 class TestRegistry(unittest.TestCase):
     """Auto-discovery + the risk/validate extension + broken-folder resilience."""
 
-    def test_real_registry_has_seven_file_tools(self):
-        self.assertEqual(sorted(A.REGISTRY), ["delete", "edit_file", "list_dir", "mkdir", "read_file", "search", "write_file"])
-        for name, r in A.REGISTRY.items():
+    FILE_TOOLS = ["delete", "edit_file", "list_dir", "mkdir", "read_file", "search", "write_file"]
+
+    def test_registry_has_file_tools_plus_execution(self):
+        self.assertEqual(sorted(A.REGISTRY), sorted(self.FILE_TOOLS + ["execute", "run_command"]))
+        for name in self.FILE_TOOLS:
+            r = A.REGISTRY[name]
             self.assertTrue(callable(r["run"]))
             self.assertEqual(r["risk"], "low")            # the file tools are all default-risk
             self.assertIsNone(r["validate"])              # none declare a validate() hook
+        self.assertEqual(A.REGISTRY["execute"]["risk"], "high")     # the execution tools carry the new metadata
+        self.assertTrue(callable(A.REGISTRY["execute"]["validate"]))
+        self.assertTrue(callable(A.REGISTRY["run_command"]["validate"]))
 
     def test_payload_shape(self):
-        p = A.tools_payload()
-        self.assertEqual(len(p["tools"]), 7)
-        self.assertEqual(sorted(p["mutating"]), ["delete", "edit_file", "mkdir", "write_file"])
-        self.assertEqual(p["risk"], {})                   # nothing above default among the file tools
+        p = A.tools_payload()                             # default registry, no .ds4 manifest in CWD
+        self.assertEqual(len(p["tools"]), len(self.FILE_TOOLS) + 2)
+        self.assertEqual(sorted(p["mutating"]), ["delete", "edit_file", "execute", "mkdir", "run_command", "write_file"])
+        self.assertEqual(p["risk"], {"execute": "high"})  # only execute is above default risk
 
     def _fixture_dir(self):
         base = tempfile.mkdtemp(prefix="ds4reg_")
@@ -317,6 +324,174 @@ class TestRegistry(unittest.TestCase):
         p = A.tools_payload(A.load_registry(self._fixture_dir()))
         self.assertEqual(p["risk"].get("danger"), "high")
         self.assertIn("danger", p["mutating"])
+
+
+class TestExecute(ToolBase):
+    """The execute tool: argv/shell runs, exit codes, cwd confinement, timeout, output cap, validate guards."""
+
+    def test_argv_success(self):
+        r = run("execute", {"argv": ["python3", "-c", "print('argv ok')"]}, self.ctx)
+        self.assertEqual(r["exit_code"], 0)
+        self.assertEqual(r["stdout"], "argv ok\n")
+        self.assertFalse(r["timed_out"])
+
+    def test_shell_pipes_and_chains(self):
+        r = run("execute", {"shell": True, "command": "echo a && echo b"}, self.ctx)
+        self.assertEqual(r["exit_code"], 0)
+        self.assertEqual(r["stdout"], "a\nb\n")
+
+    def test_nonzero_exit_is_a_result_not_error(self):
+        r = run("execute", {"argv": ["python3", "-c", "import sys; sys.exit(3)"]}, self.ctx)
+        self.assertEqual(r["exit_code"], 3)            # surfaced as a normal result, not an exception
+
+    def test_stderr_captured(self):
+        r = run("execute", {"argv": ["python3", "-c", "import sys; sys.stderr.write('boom')"]}, self.ctx)
+        self.assertIn("boom", r["stderr"])
+
+    def test_runs_in_the_workspace(self):
+        self.put("marker.txt", "x")
+        r = run("execute", {"shell": True, "command": "ls"}, self.ctx)
+        self.assertIn("marker.txt", r["stdout"])       # cwd defaulted to the workspace, NOT the repo/process dir
+
+    def test_cwd_escape_blocked(self):
+        with self.assertRaises(PermissionError):
+            run("execute", {"argv": ["ls"], "cwd": "../.."}, self.ctx)   # safe_path confines cwd
+
+    def test_timeout_kills_process(self):
+        r = A.run_process({"argv": ["sleep", "5"]}, timeout=1)            # short timeout via run_process directly
+        self.assertTrue(r["timed_out"])
+        self.assertIsNone(r["exit_code"])
+
+    def test_output_capped(self):
+        orig = A.EXEC_MAX_OUTPUT
+        A.EXEC_MAX_OUTPUT = 16
+        try:
+            r = A.run_process({"argv": ["python3", "-c", "print('z' * 1000)"]})
+            self.assertTrue(r["truncated"])
+            self.assertIn("output truncated", r["stdout"])
+        finally:
+            A.EXEC_MAX_OUTPUT = orig
+
+    def test_validate_requires_a_command_form(self):
+        v = A.REGISTRY["execute"]["validate"]
+        with self.assertRaises(ValueError): v({})                         # neither argv nor shell
+        with self.assertRaises(ValueError): v({"argv": "notalist"})       # argv must be an array
+        with self.assertRaises(ValueError): v({"argv": []})               # ... a non-empty one
+        with self.assertRaises(ValueError): v({"shell": True})            # shell needs a command string
+        self.assertIsNone(v({"argv": ["echo", "hi"]}))
+        self.assertIsNone(v({"shell": True, "command": "echo hi"}))
+
+
+class TestRunCommand(ToolBase):
+    """run_command: resolves pre-vetted .ds4/commands.json entries; refuses unknown names / missing manifest."""
+
+    def _manifest(self, obj):
+        os.makedirs(os.path.join(self.ws, ".ds4"), exist_ok=True)
+        spit(os.path.join(self.ws, ".ds4", "commands.json"), json.dumps(obj))
+
+    def test_runs_argv_command(self):
+        self._manifest({"commands": {"hello": {"argv": ["python3", "-c", "print(1)"]}}})
+        r = run("run_command", {"name": "hello"}, self.ctx)
+        self.assertEqual(r["exit_code"], 0)
+        self.assertEqual(r["stdout"], "1\n")
+        self.assertEqual(r["name"], "hello")
+
+    def test_runs_shell_command(self):
+        self._manifest({"commands": {"sh": {"shell": "echo hi"}}})
+        r = run("run_command", {"name": "sh"}, self.ctx)
+        self.assertEqual(r["stdout"], "hi\n")
+
+    def test_unknown_name_lists_available(self):
+        self._manifest({"commands": {"test": {"argv": ["true"]}, "lint": {"argv": ["true"]}}})
+        with self.assertRaises(ValueError) as cm:
+            run("run_command", {"name": "nope"}, self.ctx)
+        msg = str(cm.exception)
+        self.assertIn("unknown command", msg)
+        self.assertIn("lint", msg); self.assertIn("test", msg)            # actionable: shows what IS available
+
+    def test_no_manifest(self):
+        with self.assertRaises(ValueError) as cm:
+            run("run_command", {"name": "test"}, self.ctx)
+        self.assertIn(".ds4/commands.json", str(cm.exception))
+
+    def test_read_commands_ignores_bad_json(self):
+        os.makedirs(os.path.join(self.ws, ".ds4"))
+        spit(os.path.join(self.ws, ".ds4", "commands.json"), "{ not json")
+        self.assertEqual(A.read_commands(), {})                           # tolerant: invalid manifest -> no commands
+
+    def test_payload_surfaces_commands(self):
+        self._manifest({"commands": {"test": {"argv": ["pytest"], "description": "run tests"}}})
+        p = A.tools_payload()
+        names = [c["name"] for c in p["commands"]]
+        self.assertIn("test", names)
+        rc = next(t for t in p["tools"] if t["function"]["name"] == "run_command")
+        self.assertIn("Available: test", rc["function"]["description"])   # description augmented live
+
+
+class TestAuditFixes(ToolBase):
+    """Regression tests for the best-practices audit fixes (truncation signals, foot-guns, flags)."""
+
+    def test_read_full_remainder_not_truncated(self):
+        self.put("f.txt", "L0\nL1\nL2\nL3\nL4\n")
+        r = run("read_file", {"path": "f.txt", "offset": 3}, self.ctx)   # lines 3-4 = the whole tail
+        self.assertEqual(r["content"], "L3\nL4")
+        self.assertFalse(r["truncated"])                                 # nothing beyond `end` was omitted
+
+    def test_read_actually_truncated(self):
+        self.put("f.txt", "L0\nL1\nL2\nL3\nL4\n")
+        r = run("read_file", {"path": "f.txt", "offset": 1, "limit": 2}, self.ctx)
+        self.assertTrue(r["truncated"])                                  # lines 3-4 omitted
+
+    def test_read_full_has_uniform_shape(self):
+        self.put("f.txt", "a\nb\nc\n")
+        r = run("read_file", {"path": "f.txt"}, self.ctx)
+        self.assertEqual(r["total_lines"], 3)
+        self.assertFalse(r["truncated"])
+
+    def test_list_dir_truncation_flag(self):
+        for i in range(5):
+            self.put("f%d.txt" % i, "x")
+        full = run("list_dir", {"path": ""}, self.ctx)
+        self.assertFalse(full["truncated"]); self.assertEqual(full["total"], 5)
+        clipped = run("list_dir", {"path": ""}, make_ctx(max_entries=2))
+        self.assertTrue(clipped["truncated"])
+        self.assertEqual(len(clipped["entries"]), 2)
+        self.assertEqual(clipped["total"], 5)
+
+    def test_search_reports_scanned_not_truncated(self):
+        self.put("a.txt", "needle\n")
+        r = run("search", {"query": "needle"}, self.ctx)
+        self.assertFalse(r["truncated"])
+        self.assertEqual(r["scanned"], 1)                                # every inspected file counts toward the budget
+
+    def test_write_requires_content(self):
+        with self.assertRaises(ValueError):                             # missing content -> loud, never a silent empty write
+            run("write_file", {"path": "x.txt"}, self.ctx)
+
+    def test_write_empty_string_is_ok(self):
+        r = run("write_file", {"path": "e.txt", "content": ""}, self.ctx)
+        self.assertEqual(r["bytes"], 0)
+        self.assertEqual(slurp(os.path.join(self.ws, "e.txt")), "")
+
+    def test_write_requires_path(self):
+        with self.assertRaises(ValueError):
+            run("write_file", {"path": "", "content": "x"}, self.ctx)
+
+    def test_write_created_flag(self):
+        self.assertTrue(run("write_file", {"path": "n.txt", "content": "a"}, self.ctx)["created"])
+        self.assertFalse(run("write_file", {"path": "n.txt", "content": "b"}, self.ctx)["created"])  # overwrite
+
+    def test_mkdir_created_flag(self):
+        self.assertTrue(run("mkdir", {"path": "d"}, self.ctx)["created"])
+        self.assertFalse(run("mkdir", {"path": "d"}, self.ctx)["created"])   # already existed -> no-op
+
+    def test_mkdir_requires_path(self):
+        with self.assertRaises(ValueError):
+            run("mkdir", {"path": ""}, self.ctx)
+
+    def test_execute_rejects_both_forms(self):
+        with self.assertRaises(ValueError):                             # argv AND shell both set -> ambiguous, refused
+            A.REGISTRY["execute"]["validate"]({"argv": ["echo", "hi"], "shell": True, "command": "echo hi"})
 
 
 if __name__ == "__main__":

@@ -5,8 +5,8 @@
     "parameters": {
       "type": "object",
       "properties": {
-        "path": { "type": "string" },
-        "content": { "type": "string", "description": "The complete file contents." }
+        "path": { "type": "string", "description": "File path relative to the workspace root." },
+        "content": { "type": "string", "description": "The complete file contents (UTF-8, up to ~2 MB)." }
       },
       "required": ["path", "content"]
     }

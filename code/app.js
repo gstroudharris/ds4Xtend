@@ -689,6 +689,7 @@
       workspace = d.root; agentWs.textContent = d.root; picker.hidden = true; try { localStorage.setItem("ds4:workspace", d.root); } catch (e) {}
       agentEmpty.textContent = "Locked to " + d.root + " — ask the agent to read or edit files here.";
       updateView(); refreshTree();
+      if (typeof AG.load === "function") AG.load(C.agentUrl, true).catch(() => {});   // new project -> refresh tool contract (run_command's .ds4 commands)
     } catch (e) { toast("Couldn't lock folder: " + (e.message || e)); }
   }
 
@@ -807,6 +808,13 @@
         let txt;
         if (typeof res === "string") txt = res.length > 4000 ? res.slice(0, 4000) + "\n…(truncated)" : res;   // already-stubbed tool text on history re-render (capped result isn't valid JSON)
         else if (res && res.error) txt = "error: " + res.error;
+        else if (res && (typeof res.stdout === "string" || res.timed_out || res.exit_code !== undefined)) {   // execute / run_command
+          const head = res.timed_out ? "⏱ timed out" : "exit " + (res.exit_code == null ? "?" : res.exit_code);
+          const parts = [head + (res.duration_sec != null ? " · " + res.duration_sec + "s" : "") + (res.command ? " · " + res.command : "")];
+          if (res.stdout) parts.push(res.stdout);
+          if (res.stderr) parts.push("[stderr]\n" + res.stderr);
+          txt = parts.join("\n"); if (txt.length > 4000) txt = txt.slice(0, 4000) + "\n…(truncated)";
+        }
         else if (res && Array.isArray(res.entries)) txt = res.entries.map((e) => (e.type === "dir" ? "📁 " : "📄 ") + e.name).join("\n") || "(empty)";
         else if (res && Array.isArray(res.matches)) txt = (res.matches.map((m) => m.file + ":" + m.line + ": " + m.text).join("\n") || "(no matches)") + (res.truncated ? "\n…(truncated)" : "");
         else if (res && typeof res.content === "string") txt = res.content.length > 4000 ? res.content.slice(0, 4000) + "\n…(truncated)" : res.content;
@@ -840,7 +848,7 @@
     const ctl = new AbortController();
     const onAbort = () => ctl.abort();
     if (ac) { if (ac.signal.aborted) ctl.abort(); else ac.signal.addEventListener("abort", onAbort, { once: true }); }
-    const ms = C.toolTimeoutMs || 30000;
+    const ms = (name === "execute" || name === "run_command") ? (C.executeTimeoutMs || 130000) : (C.toolTimeoutMs || 30000);   // commands may run test suites/builds
     const timer = setTimeout(() => ctl.abort(new DOMException("timeout", "TimeoutError")), ms);
     try {
       const r = await fetch(C.agentUrl + ep, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(args || {}), signal: ctl.signal });
@@ -857,7 +865,13 @@
 
   const isMutating = (name) => !!(AG.MUTATING || {})[name];   // tools that need approval in Ask mode — set live by AG.load()
   const riskOf     = (name) => (AG.RISK || {})[name] || "low"; // per-tool risk from spec.json (default "low")
-  const isHighRisk = (name) => riskOf(name) === "high";        // high-risk -> HITL approval ALWAYS, even in Auto mode
+  const isHighRisk = (name) => riskOf(name) === "high";        // high-risk -> ⚠ label + approval in Ask mode (Auto runs autonomously)
+  function commandsNote() {                                     // tell the model which project commands run_command can run
+    const cs = AG.COMMANDS || [];
+    if (!cs.length) return "";
+    return "\n\nThis project declares these commands (run with run_command): " +
+      cs.map((c) => c.name + (c.description ? " — " + c.description : "")).join("; ") + ".";
+  }
   function askConfirm(title, body) {
     return new Promise((resolve) => {
       const box = document.createElement("div"); box.className = "approve";
@@ -887,11 +901,18 @@
     }
     if (name === "mkdir") return { title: "Create folder " + args.path, body: "" };
     if (name === "delete") return { title: "Delete " + args.path, body: "This permanently removes it from the workspace." };
+    if (name === "execute") {
+      const cmd = args.shell ? (args.command || "") : (Array.isArray(args.argv) ? args.argv.join(" ") : "");
+      const where = args.cwd ? " (in " + args.cwd + ")" : "";
+      return { title: "Run command" + (args.shell ? " via shell" : "") + where, body: cmd || JSON.stringify(args) };
+    }
+    if (name === "run_command") return { title: "Run project command: " + (args.name || ""), body: "Pre-vetted command from .ds4/commands.json" };
     return { title: name, body: JSON.stringify(args) };
   }
   async function execToolCall(name, args, card, ac) {
-    // High-risk tools (e.g. a future `execute`) always require approval; mutating tools require it in Ask mode.
-    if (isHighRisk(name) || (isMutating(name) && agentMode === "ask")) {
+    // Approvals are gated by MODE: in Ask, mutating + high-risk tools need a human OK; in Auto the agent runs
+    // autonomously — no approvals, including execute. The high-risk flag still drives the ⚠ label in Ask mode.
+    if ((isHighRisk(name) || isMutating(name)) && agentMode === "ask") {
       let ok;
       if (card.approve && !isHighRisk(name)) ok = await card.approve((name === "edit_file" ? "edit to " : "write to ") + args.path);  // inline on the live write-preview
       else { const a = await approvalFor(name, args, ac); const title = isHighRisk(name) ? "⚠ High-risk — " + a.title : a.title; ok = await askConfirm(title, a.body); }
@@ -904,8 +925,9 @@
       if (name === "mkdir") display = { content: "📁 created " + (res.path || args.path) };
       else if (name === "delete") display = { content: "🗑 deleted " + (res.deleted || "") + " " + (res.path || args.path) };
     }
-    card.result(display, res && res.error ? "error" : "ok");
-    if (isMutating(name) && !(res && res.error)) refreshTree();
+    const failed = res && (res.error || res.timed_out || (typeof res.exit_code === "number" && res.exit_code !== 0));   // a command that ran but exited non-zero shows as error
+    card.result(display, failed ? "error" : "ok");
+    if (isMutating(name) && !(res && res.error)) refreshTree();   // a command may have changed files even on a non-zero exit
     return res;
   }
 
@@ -1005,7 +1027,7 @@
       const mtA = maxTokensFor(sumTok(sentMsgs) + tokFromChars(AGENT_SYSTEM.length) + tokFromChars(toolsChrs));
       res = await fetch(C.serverUrl + "/v1/chat/completions", {
         method: "POST", headers: { "Content-Type": "application/json" }, signal: ac.signal,
-        body: JSON.stringify({ model: C.model, stream: true, stream_options: { include_usage: true }, tools: toolDefs(), tool_choice: "auto", messages: [{ role: "system", content: AGENT_SYSTEM }].concat(sentMsgs), ...thinkSpread(agentThink.level), ...(mtA ? { max_tokens: mtA } : {}) }),
+        body: JSON.stringify({ model: C.model, stream: true, stream_options: { include_usage: true }, tools: toolDefs(), tool_choice: "auto", messages: [{ role: "system", content: AGENT_SYSTEM + commandsNote() }].concat(sentMsgs), ...thinkSpread(agentThink.level), ...(mtA ? { max_tokens: mtA } : {}) }),
       });
       if (res.ok) break;
       const errTxt = await res.text();

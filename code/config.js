@@ -27,8 +27,11 @@ window.DS4_CONFIG = {
   agentWriteEchoChars: "auto",  // separate, LARGER cap on write_file/edit_file content echoed back into context
                                 //   (the model's own recent work product). "auto" = ~3× the output cap, ≥12k,
                                 //   ≤30% of ctx — keeps typical files whole (fewer re-reads) while bounding the worst case.
-  toolTimeoutMs: 30000,         // hard ceiling on a single tool call (file I/O is bounded, but a wedged backend or
-                                //   pathological scan must not hang the agent loop). Also abortable mid-flight by Stop.
+  toolTimeoutMs: 30000,         // hard ceiling on a single FILE tool call (file I/O is bounded, but a wedged backend
+                                //   or pathological scan must not hang the agent loop). Also abortable mid-flight by Stop.
+  executeTimeoutMs: 130000,     // longer ceiling for execute/run_command (test suites, builds). Kept just ABOVE the
+                                //   backend's EXEC_TIMEOUT_SEC (120s) so the backend kills the process and returns a
+                                //   clean "timed out" result before the frontend would abort. Also Stop-abortable.
 
   // Transient backend errors (e.g. ROCm "prefill state reset failed", any HTTP 5xx/429). A single one would
   // otherwise kill a whole looping agent run; instead the frontend retries the SAME request a few times with

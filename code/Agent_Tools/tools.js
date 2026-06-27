@@ -14,6 +14,9 @@ window.DS4_AGENT = {
     "cannot access anything outside it. Prefer edit_file for small changes; read or search before editing, " +
     "and give edit_file a 'find' that matches exactly one place (include surrounding lines) or set replace_all. " +
     "When writing a file, provide its full new contents. When done, briefly summarize your changes. " +
+    "To run tests, builds, or scripts: prefer run_command for the project's declared steps; use execute for " +
+    "ad-hoc commands (in Ask mode execute asks the user to approve; in Auto it runs autonomously). Read command output and " +
+    "fix any failures before continuing. " +
     "Context is limited: read large files in ranges with read_file offset/limit instead of whole, and note that " +
     "older tool outputs may be trimmed to fit - re-read the specific range you need. If you get an automatic " +
     "context notice, wrap up and summarize promptly.",
@@ -23,7 +26,8 @@ window.DS4_AGENT = {
   TOOLS: [],            // OpenAI function defs sent to ds4 each turn as `tools`
   ENDPOINTS: {},        // tool name -> backend HTTP path (plus the built-in `tree`)
   MUTATING: {},         // tool name -> 1 for tools that change the workspace (gated in Ask mode)
-  RISK: {},             // tool name -> risk level ("medium"/"high"); high-risk tools force approval even in Auto
+  RISK: {},             // tool name -> risk level ("medium"/"high"); drives the ⚠ label on the Ask-mode approval
+  COMMANDS: [],         // [{name, description}] from the workspace's .ds4/commands.json (what run_command can run)
   loaded: false,
 
   // Fetch the live tool contract from the backend registry. The backend (agent_tools.py) auto-discovers
@@ -47,6 +51,7 @@ window.DS4_AGENT = {
     this.ENDPOINTS = endpoints;
     this.MUTATING = mutating;
     this.RISK = (p && p.risk && typeof p.risk === "object") ? p.risk : {};   // {name: "high"|"medium"} for above-default tools
+    this.COMMANDS = Array.isArray(p.commands) ? p.commands : [];             // project commands for run_command (per workspace)
     this.loaded = true;
     return this.TOOLS;
   },

@@ -13,9 +13,10 @@ def run(args, ctx):
     if not os.path.isfile(p):
         raise FileNotFoundError("not a file: %s" % rel)
     if os.path.getsize(p) > ctx.MAX_BYTES:
-        raise ValueError("file too large")
+        raise ValueError("file is over the %d-byte edit cap — edit a smaller file or split the change" % ctx.MAX_BYTES)
     try:
-        text = open(p, "rb").read().decode("utf-8")
+        with open(p, "rb") as f:
+            text = f.read().decode("utf-8")
     except UnicodeDecodeError:
         raise ValueError("file is not UTF-8 text")
     count = text.count(find)
@@ -25,7 +26,7 @@ def run(args, ctx):
         raise ValueError("'find' matches %d places — add surrounding text to make it unique, or set replace_all=true" % count)
     enc = text.replace(find, replace if replace is not None else "").encode("utf-8")
     if len(enc) > ctx.MAX_BYTES:
-        raise ValueError("result too large")
+        raise ValueError("result would be over the %d-byte cap after replacement" % ctx.MAX_BYTES)
     with open(p, "wb") as f:
         f.write(enc)
     return {"path": rel, "replacements": count, "bytes": len(enc)}

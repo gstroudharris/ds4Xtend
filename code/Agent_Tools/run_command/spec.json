@@ -1,0 +1,12 @@
+{
+  "function": {
+    "name": "run_command",
+    "description": "Run a named project command that a human declared in .ds4/commands.json (e.g. test, build, lint), and return its exit code, stdout and stderr. Safer than execute because the command is pre-vetted and you cannot change its arguments — prefer it for running the project's test/build/lint steps.",
+    "parameters": {
+      "type": "object",
+      "properties": { "name": { "type": "string", "description": "The command name from .ds4/commands.json." } },
+      "required": ["name"]
+    }
+  },
+  "mutating": true
+}

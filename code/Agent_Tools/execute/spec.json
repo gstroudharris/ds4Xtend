@@ -1,0 +1,17 @@
+{
+  "function": {
+    "name": "execute",
+    "description": "Run a command in the workspace and return its exit code, stdout and stderr. High-risk (approved by the human in Ask mode; runs autonomously in Auto). Prefer run_command for the project's declared test/build/lint steps.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "argv": { "type": "array", "items": { "type": "string" }, "description": "Command as an array, no shell — e.g. [\"python3\", \"script.py\"]. Use this OR shell+command." },
+        "shell": { "type": "boolean", "description": "If true, run `command` through bash -c (enables pipes, &&, redirects, globs)." },
+        "command": { "type": "string", "description": "Shell command string; only used when shell is true." },
+        "cwd": { "type": "string", "description": "Optional working directory, relative to the workspace root (defaults to the root)." }
+      }
+    }
+  },
+  "mutating": true,
+  "risk": "high"
+}

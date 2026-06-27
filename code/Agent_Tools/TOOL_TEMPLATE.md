@@ -25,7 +25,7 @@ Agent_Tools/
   ```
   `function` is the OpenAI tool definition the model sees. `mutating: true` marks a tool that changes
   the workspace, so it's gated behind an approval/diff in **Ask** mode. `risk` is optional (default
-  `"low"`); `"high"` forces an approval **even in Auto mode** (see *Risky tools* below).
+  `"low"`); `"high"` shows a `⚠` label and asks for approval in **Ask mode** (see *Risky tools* below).
 - **`tool.py`** — the implementation, exposing:
   ```python
   def run(args, ctx):       # REQUIRED
@@ -57,6 +57,8 @@ deliberately *not* a tool folder, so the model can't call it — only the file-t
 | `workspace()` | absolute path of the locked workspace root |
 | `MAX_BYTES` | per-file read/write cap (2 MB) |
 | `MAX_ENTRIES` | listing cap |
+| `run_process(spec)` | Run a command (cwd confined to the workspace, hard timeout, output cap, scrubbed env). `spec` = `{"argv":[...]}` or `{"shell":True,"command":"..."}` (+ optional `"cwd"`). Returns `{exit_code, stdout, stderr, timed_out, duration_sec, truncated}`. Used by `execute`/`run_command`. |
+| `read_commands()` | The workspace's `.ds4/commands.json` as `{name: {argv\|shell, description, cwd}}` (or `{}`). Human-authored, pre-vetted named commands. |
 
 ## Adding a tool — template
 
@@ -101,37 +103,54 @@ tool result: `PermissionError → 403/denied`, `FileNotFoundError`/`ValueError �
 For a mutating tool you *may* also add a nicer diff/preview in `approvalFor()` (in `app.js`) — but it's
 optional: with `"mutating": true`, the generic Ask-mode approval already gates it.
 
-## Risky tools (`execute` and friends)
+## Command execution — `execute` + `run_command` (shipped)
 
-Before adding anything that runs code, hits the network, or is otherwise irreversible/costly, know the
-boundary: **`ctx.safe_path` confines file paths, but it does NOT confine a subprocess.** A child process
-can touch anything the user can — it escapes the workspace entirely. So for a risky tool, the schema and
-`validate()` *are* the containment, not a backstop. Build it like this:
+Command tools exist now, built on the four guards below. The key boundary to keep in mind:
+**`ctx.safe_path` confines file paths, but it does NOT confine a subprocess** — a child process can reach
+anything the user can. **The Ask/Auto switch is the approval gate**: in Ask mode the schema, `validate()`,
+and HITL approval are the containment; in **Auto** mode the agent runs commands autonomously (no approvals),
+so Auto is a deliberate "I trust this agent to run unattended" choice — confinement there falls to the
+`validate()`/`_wrap()` layers (and a future bwrap sandbox), not a human.
 
-1. **Model the input so unsafe states are unrepresentable.** Don't take a freeform `command: string`
-   (`"rm -rf /"` is a valid string). Take a `command` **enum** of allowed binaries + an `args` **array**,
-   and never pass it through a shell with string interpolation.
-2. **`"risk": "high"`** in `spec.json` → the frontend forces an approval **every time, even in Auto mode**
-   (a high-risk call shows a `⚠ High-risk` confirmation; it is never auto-run).
-3. **`validate(args)`** in `tool.py` → enforce the hard constraints in code (allowlist, no shell
-   metacharacters, path confinement). It runs before `run()`; raise `ValueError` and the model gets a
-   clean 400 it can correct from. This is *defense in depth* — state the rule in the schema **and** enforce
-   it here, because HITL approval is a UI control and must not be the only gate.
-4. **Bound execution inside `run()`**: a hard timeout, an output cap, and a workspace-confined `cwd`
-   (true OS-level isolation — namespaces/seccomp/a container — is beyond this stdlib sidecar; if you need
-   it, that's a sign the tool belongs in a different layer).
+- **`execute`** — `risk:"high"`. In **Ask** mode it requires human approval (a `⚠ High-risk` confirmation);
+  in **Auto** mode it runs autonomously like any other tool — the high-risk flag drives the warning *label*,
+  not an unconditional gate. Hybrid input: an `argv` array (no shell) or `shell:true` + `command` (run via
+  `["bash","-c",cmd]`, so `shell=False` at the Python level — no interpolation injection).
+- **`run_command`** — runs a **named** command from `.ds4/commands.json`. The model only picks a name
+  (no arg passthrough), so a human-vetted command stays vetted. It is `mutating` but **not** high-risk →
+  approved in Ask mode, but may run unattended in Auto (enables an edit → run-tests → fix loop).
 
-> The current toolset is deliberately *no code execution* — file I/O only. Adding `execute` crosses that
-> line on purpose; do it consciously, with the four guards above.
+Both go through `ctx.run_process()`, the single chokepoint that confines `cwd` to the workspace, enforces
+a hard timeout (kills the whole process group), caps output, and scrubs the env. `_wrap(argv)` inside it
+is the **bwrap-ready hook**: today it returns argv unchanged; to add OS-level isolation later, wrap it
+there once and every command inherits it.
+
+If you add another risky tool, follow the same four guards:
+1. **Model the input so unsafe states are unrepresentable** — argv array / enum, not a freeform string passed to a real shell.
+2. **`"risk": "high"`** in `spec.json` → a `⚠ High-risk` approval in **Ask** mode (in Auto the agent runs autonomously; the Ask/Auto switch is the gate).
+3. **`validate(args)`** in `tool.py` → enforce the hard constraints in code (raise `ValueError` → clean 400). Defense in depth: schema **and** code, because approval is a UI control, not the only gate.
+4. **Bound execution** via `ctx.run_process` (timeout + output cap + confined cwd). True OS isolation (namespaces/seccomp/container) is beyond this stdlib sidecar — slot it into `_wrap()` when needed.
+
+### Project commands — `.ds4/commands.json`
+
+A workspace declares pre-vetted commands a human trusts the agent to run:
+```json
+{ "commands": {
+  "test":  { "argv": ["pytest", "-q"], "description": "Run the test suite" },
+  "build": { "argv": ["make"], "description": "Build" },
+  "lint":  { "shell": "ruff check . && echo ok", "description": "Lint" } } }
+```
+Each entry is `{argv:[...]}` **or** `{shell:"..."}`, plus optional `description` and `cwd`. The names are
+surfaced to the model (injected into `run_command`'s description + the system note) and to the UI.
 
 ## Bounded + tested
 
-- **Every tool call has a hard timeout** (`toolTimeoutMs` in `config.js`) and is abortable mid-flight by
-  **Stop** — a wedged or slow tool can't hang the agent loop. Keep `run()` itself bounded too (scan caps,
-  `ctx.MAX_BYTES`), so the backend never relies on the client to stop it.
+- **Every tool call has a hard timeout** (`toolTimeoutMs`; `executeTimeoutMs` for commands) and is abortable
+  mid-flight by **Stop** — a wedged or slow tool can't hang the agent loop. Keep `run()` itself bounded too
+  (scan caps, `ctx.MAX_BYTES`, the exec timeout/output cap), so the backend never relies on the client to stop it.
 - **[`test_tools.py`](test_tools.py)** is the iterative-evaluation backstop (stdlib `unittest`,
   `python3 test_tools.py`). When you add a tool or a guard, add its success **and** failure cases there —
-  especially anything that must *refuse* (escape attempts, non-unique edits, risky-arg rejection).
+  especially anything that must *refuse* (escape attempts, non-unique edits, cwd escapes, risky-arg rejection).
 
 ## Best practices (so the model gets it right the first time, every time)
 

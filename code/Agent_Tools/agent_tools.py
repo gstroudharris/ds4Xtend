@@ -4,8 +4,12 @@
 The browser can't touch the filesystem, so the web agent loop calls THIS localhost-only
 service to run its file tools. THE LOCK: every path is confined to a chosen workspace
 folder — paths are resolved with realpath() and rejected unless they stay inside
-realpath(workspace), which defeats '..' traversal AND symlink escapes. Read / list / write
-only; there is no shell execution by design. Stdlib only; binds 127.0.0.1.
+realpath(workspace), which defeats '..' traversal AND symlink escapes. File I/O is fully
+sandboxed this way. Command execution (the `execute` / `run_command` tools) runs a real
+subprocess with cwd confined to the workspace, a hard timeout, an output cap and a scrubbed
+env — but a subprocess can still reach the wider machine, so `execute` is marked high-risk: the UI
+gates it behind human approval in ASK mode, while AUTO mode runs the agent autonomously (no approvals).
+Stdlib only; binds 127.0.0.1.
 
 Tools are a REGISTRY: each tool is a sibling folder holding `spec.json` (the model-facing
 function definition + a "mutating" flag) and `tool.py` (exposing `run(args, ctx)`). They are
@@ -19,17 +23,23 @@ Endpoints
   GET  /workspace               -> {root}
   POST /workspace   {path}      -> lock to a folder (must be an existing dir)
   GET  /browse?path=ABS         -> list sub-dirs of ABS (folder picker; read-only, dirs only)
-  GET  /tools                   -> {tools:[...defs], mutating:[...]} (the auto-discovered registry)
+  GET  /tools                   -> {tools:[...defs], mutating:[...], risk:{...}, commands:[...]} (the registry)
   POST /tools/<name> {...args}  -> run a registered tool (sandboxed)
   POST /tools/tree   {path}     -> file tree for the UI (built-in; not a model tool)
 """
-import argparse, importlib.util, json, os, threading, types
+import argparse, importlib.util, json, os, signal, subprocess, threading, time, types
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 _lock = threading.Lock()
 _ws = {"root": None}                 # locked workspace root (absolute realpath) or None
 MAX_BYTES = 2 * 1024 * 1024          # per-file read/write cap
 MAX_ENTRIES = 5000                   # list_dir cap
+
+# --- command execution (execute / run_command) caps. The frontend waits a bit longer than EXEC_TIMEOUT_SEC
+#     (config.executeTimeoutMs) so the backend kills the process and returns a clean result first. ---
+EXEC_TIMEOUT_SEC = 120               # hard wall-clock per command; on expiry the whole process group is killed
+EXEC_MAX_OUTPUT = 64 * 1024          # cap on captured stdout AND stderr each (bytes) before truncation
+ENV_KEEP = ("PATH", "HOME", "LANG", "LC_ALL", "LC_CTYPE", "TERM", "USER", "SHELL", "TMPDIR")  # scrubbed env allowlist
 
 
 # ---------------- workspace + the sandbox boundary ----------------
@@ -61,10 +71,101 @@ def safe_path(rel):
     return real
 
 
-# Handed to every tool's run(args, ctx). Tools MUST resolve paths through ctx.safe_path —
-# that call IS the sandbox lock. ctx.workspace()/MAX_BYTES/MAX_ENTRIES are the shared limits.
+# ---------------- command execution (shared by the execute / run_command tools) ----------------
+def _scrubbed_env():
+    """A minimal environment for executed commands — only the allowlisted keys, never the full os.environ."""
+    env = {k: os.environ[k] for k in ENV_KEEP if k in os.environ}
+    env.setdefault("PATH", "/usr/local/bin:/usr/bin:/bin")
+    return env
+
+
+def _wrap(argv):
+    """bwrap-ready chokepoint: today returns argv unchanged. To sandbox EVERY command the same way later,
+    prepend a bubblewrap invocation here (e.g. bwrap --bind <ws> <ws> --unshare-net ...). Keep this the
+    ONLY place the final argv is assembled so the sandbox cannot be bypassed by an individual tool."""
+    return argv
+
+
+def run_process(spec, timeout=None):
+    """Run a command and return a captured result dict. `spec`:
+         {"argv": [str, ...]}                 -> run directly, NO shell
+         {"shell": True, "command": "..."}    -> run via ['bash','-c', command]  (pipes/&&/redirects)
+       optional "cwd" (workspace-relative). cwd is confined to the workspace via safe_path. Never raises on a
+       non-zero exit (that's a normal result); raises ValueError on a malformed spec and PermissionError if cwd
+       escapes the workspace. On timeout the whole process group is killed and timed_out=True is returned."""
+    ws = workspace()
+    if not ws:
+        raise PermissionError("no workspace selected")
+    if spec.get("shell"):
+        cmd = spec.get("command")
+        if not isinstance(cmd, str) or not cmd.strip():
+            raise ValueError("shell command must be a non-empty string")
+        argv, shown = ["bash", "-c", cmd], cmd
+    else:
+        argv = spec.get("argv")
+        if not (isinstance(argv, list) and argv and all(isinstance(a, str) for a in argv)):
+            raise ValueError("argv must be a non-empty array of strings")
+        shown = " ".join(argv)
+    cwd = safe_path(spec.get("cwd") or "")             # confine the working directory to the workspace
+    if not os.path.isdir(cwd):
+        raise ValueError("cwd is not a directory: %r" % (spec.get("cwd") or "."))
+    t0, timed_out = time.time(), False
+    proc = subprocess.Popen(_wrap(argv), cwd=cwd, env=_scrubbed_env(),
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
+    try:
+        out, err = proc.communicate(timeout=(timeout or EXEC_TIMEOUT_SEC))
+        rc = proc.returncode
+    except subprocess.TimeoutExpired:
+        timed_out = True
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)   # kill children too, not just the direct child
+        except (ProcessLookupError, PermissionError):
+            pass
+        out, err = proc.communicate()
+        rc = None
+
+    def dec(b):
+        s = (b or b"").decode("utf-8", "replace")
+        return (s[:EXEC_MAX_OUTPUT] + "\n…(output truncated)") if len(s) > EXEC_MAX_OUTPUT else s
+
+    return {"command": shown, "exit_code": rc, "timed_out": timed_out,
+            "stdout": dec(out), "stderr": dec(err),
+            "duration_sec": round(time.time() - t0, 2),
+            "truncated": len(out or b"") > EXEC_MAX_OUTPUT or len(err or b"") > EXEC_MAX_OUTPUT}
+
+
+def read_commands():
+    """Read <workspace>/.ds4/commands.json -> {name: {argv|shell, description, cwd}}. {} if absent/invalid.
+    These named commands are human-authored (pre-vetted), so run_command may run them with lighter friction."""
+    ws = workspace()
+    if not ws:
+        return {}
+    try:
+        p = safe_path(".ds4/commands.json")
+    except PermissionError:
+        return {}
+    if not os.path.isfile(p):
+        return {}
+    try:
+        with open(p, encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return {}
+    cmds = data.get("commands") if isinstance(data, dict) else None
+    if not isinstance(cmds, dict):
+        return {}
+    out = {}
+    for name, spec in cmds.items():       # keep only well-formed entries (argv array OR shell string)
+        if isinstance(spec, dict) and (isinstance(spec.get("argv"), list) or isinstance(spec.get("shell"), str)):
+            out[str(name)] = spec
+    return out
+
+
+# Handed to every tool's run(args, ctx). Tools MUST resolve paths through ctx.safe_path — that call IS the
+# sandbox lock. ctx.run_process executes commands (cwd-confined); ctx.read_commands reads the .ds4 manifest.
 CTX = types.SimpleNamespace(safe_path=safe_path, workspace=workspace,
-                            MAX_BYTES=MAX_BYTES, MAX_ENTRIES=MAX_ENTRIES)
+                            MAX_BYTES=MAX_BYTES, MAX_ENTRIES=MAX_ENTRIES,
+                            run_process=run_process, read_commands=read_commands)
 
 
 # ---------------- tool registry (auto-discovered: each tool = a folder with spec.json + tool.py) ----------------
@@ -102,12 +203,23 @@ REGISTRY = load_registry()
 
 
 def tools_payload(reg=None):
-    """The model-facing contract the frontend fetches once: OpenAI tool defs + which names mutate + per-tool risk.
-    `risk` only lists tools above the default ("low"); the frontend forces approval on high-risk tools even in Auto."""
+    """The model-facing contract the frontend fetches: OpenAI tool defs + which names mutate + per-tool risk +
+    the project's named commands. `risk` only lists tools above the default ("low"); the frontend shows a ⚠ label
+    and asks for approval on high-risk tools in Ask mode (Auto runs autonomously). `commands` is the .ds4/commands.json manifest, surfaced so the model + UI
+    know what run_command can run (run_command's description is augmented live with the available names)."""
     reg = REGISTRY if reg is None else reg
-    return {"tools": [{"type": "function", "function": r["def"]} for r in reg.values()],
+    cmds = read_commands()
+    cmd_list = [{"name": n, "description": (s.get("description") or "")} for n, s in cmds.items()]
+    tools = []
+    for name, r in reg.items():
+        fn = r["def"]
+        if name == "run_command" and cmd_list:        # tell the model which named commands exist right now
+            fn = dict(fn, description=(fn.get("description", "") + " Available: " + ", ".join(c["name"] for c in cmd_list) + "."))
+        tools.append({"type": "function", "function": fn})
+    return {"tools": tools,
             "mutating": [name for name, r in reg.items() if r["mutating"]],
-            "risk": {name: r["risk"] for name, r in reg.items() if r.get("risk") and r["risk"] != "low"}}
+            "risk": {name: r["risk"] for name, r in reg.items() if r.get("risk") and r["risk"] != "low"},
+            "commands": cmd_list}
 
 
 # ---------------- built-in UI-only endpoints (NOT registry tools) ----------------

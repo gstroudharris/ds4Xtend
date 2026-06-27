@@ -2,7 +2,7 @@
   "function": {
     "name": "list_dir",
     "description": "List files and folders in a directory.",
-    "parameters": { "type": "object", "properties": { "path": { "type": "string" } }, "required": ["path"] }
+    "parameters": { "type": "object", "properties": { "path": { "type": "string", "description": "Directory relative to the workspace root; \"\" or \".\" lists the root." } }, "required": ["path"] }
   },
   "mutating": false
 }

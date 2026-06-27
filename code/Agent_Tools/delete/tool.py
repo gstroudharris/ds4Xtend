@@ -1,4 +1,5 @@
 """delete — remove a file, or an EMPTY directory (no recursive delete)."""
+import errno
 import os
 
 
@@ -10,8 +11,10 @@ def run(args, ctx):
     if os.path.isdir(p):
         try:
             os.rmdir(p)            # empty dirs only — no recursive delete
-        except OSError:
-            raise ValueError("directory not empty (refusing recursive delete): %s" % rel)
+        except OSError as e:
+            if e.errno in (errno.ENOTEMPTY, errno.EEXIST):
+                raise ValueError("directory not empty (no recursive delete): %s — delete its contents first" % rel)
+            raise                  # a different OSError (permission/busy/…) -> generic io error, not mislabeled
         return {"path": rel, "deleted": "directory"}
     if os.path.isfile(p):
         os.remove(p)
