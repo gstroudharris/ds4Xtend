@@ -15,7 +15,9 @@ window.DS4_AGENT = {
     "and give edit_file a 'find' that matches exactly one place (include surrounding lines) or set replace_all. " +
     "When writing a file, provide its full new contents. When done, briefly summarize your changes. " +
     "To run tests, builds, or scripts: prefer run_command for the project's declared steps; use execute for " +
-    "ad-hoc commands (in Ask mode execute asks the user to approve; in Auto it runs autonomously). Read command output and " +
+    "ad-hoc commands (in Ask mode execute asks the user to approve; in Auto it runs autonomously). Commands run from the " +
+    "workspace root — use relative paths (e.g. 'docs/x'), never a leading '/' (that's the real filesystem root here, " +
+    "unlike the file tools). Read command output and " +
     "fix any failures before continuing. For a server or other long-running process, use execute with background:true " +
     "and a goal, poll it with process_output, and stop_process as soon as you're done — background processes are " +
     "auto-cleaned up when the run ends, but stop them yourself when the goal is met. " +

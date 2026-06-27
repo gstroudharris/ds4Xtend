@@ -1,11 +1,11 @@
 {
   "function": {
     "name": "execute",
-    "description": "Run a command in the workspace and return its exit code, stdout and stderr. High-risk (approved by the human in Ask mode; runs autonomously in Auto). Prefer run_command for the project's declared test/build/lint steps. For a LONG-RUNNING process (a server/watcher), set background:true with a goal — you get a job_id back immediately; poll it with process_output and stop it with stop_process when done.",
+    "description": "Run a command in the workspace and return its exit code, stdout and stderr. The working directory is the workspace ROOT, so use paths RELATIVE to it (e.g. \"docs/role_roll\", \"./build.sh\") — a leading \"/\" is the real filesystem root, NOT the workspace (the file tools accept \"/path\" as workspace-relative, but a shell does not, so \"/docs/x\" fails with \"No such file or directory\"). High-risk (approved by the human in Ask mode; runs autonomously in Auto). Prefer run_command for the project's declared test/build/lint steps. For a LONG-RUNNING process (a server/watcher), set background:true with a goal — you get a job_id back immediately; poll it with process_output and stop it with stop_process when done.",
     "parameters": {
       "type": "object",
       "properties": {
-        "argv": { "type": "array", "items": { "type": "string" }, "description": "Command as an array, no shell — e.g. [\"python3\", \"script.py\"]. Use this OR shell+command." },
+        "argv": { "type": "array", "items": { "type": "string" }, "description": "Command as an array, no shell — e.g. [\"python3\", \"script.py\"]. Use this OR shell+command. Paths are relative to the workspace root (no leading \"/\")." },
         "shell": { "type": "boolean", "description": "If true, run `command` through bash -c (enables pipes, &&, redirects, globs)." },
         "command": { "type": "string", "description": "Shell command string; only used when shell is true." },
         "cwd": { "type": "string", "description": "Optional working directory, relative to the workspace root (defaults to the root)." },
