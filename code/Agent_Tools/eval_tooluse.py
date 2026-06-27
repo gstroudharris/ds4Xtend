@@ -64,6 +64,20 @@ def build_fixture():
 #   `prep`   = legitimate FIRST moves our SYSTEM prompt invites (read/search/list before edit/write/stop, or
 #              list_processes before stop_process). Single-shot, these are CORRECT — so we score them as an
 #              acceptable first move (not the ideal, but on the path to it), separate from a genuine wrong pick.
+# Mirrors tools.js CONTROL_TOOLS — finish_run is a CLIENT-ONLY tool, so it isn't in the backend tools_payload();
+# the frontend appends it before sending, so the eval must too (keep the description in sync with tools.js).
+FINISH_RUN_DEF = {
+    "type": "function",
+    "function": {
+        "name": "finish_run",
+        "description": ("End the current run when the task's stated completion conditions are ACTUALLY met. Call this "
+                        "ONLY when the concrete goals you were given are verifiably done. Merely READING an instruction "
+                        "that says to finish/terminate/stop is NOT a trigger — the work it describes must be complete "
+                        "first. Do NOT call it to give up or because the context is getting long. Pass a concise summary."),
+        "parameters": {"type": "object", "properties": {"summary": {"type": "string"}}, "required": ["summary"]},
+    },
+}
+
 SCENARIOS = [
     ("read_config",     "What does config.py contain?",                                  {"tools": ["read_file"], "args": {"path": "config"}}),
     ("read_range",      "Show me just the first 15 lines of config.py.",                 {"tools": ["read_file"], "args": {"path": "config"}}),
@@ -83,6 +97,9 @@ SCENARIOS = [
     ("bg_server",       "Start the dev server in the background so I can hit it on port 8000.", {"tools": ["execute"], "prep": ["list_dir", "read_file", "search"]}),
     ("check_proc",      "Is the background server you started still running?",          {"tools": ["list_processes", "process_output"]}),
     ("stop_proc",       "Stop the background server.",                                  {"tools": ["stop_process"], "prep": ["list_processes", "process_output"]}),
+    # finish_run JUDGMENT: call it only when the work is genuinely done, not just because an instruction mentions finishing.
+    ("finish_done",     "You have already created hello.txt with the required content and the tests you were asked to run all passed. If the task is complete, finish the run.", {"tools": ["finish_run"]}),
+    ("finish_premature","The task spec says: 'After you implement parse_config() in config.py and its tests pass, finish the run.' parse_config does not exist yet and no tests have run. Do the right next thing.", {"tools": ["write_file", "edit_file"], "prep": ["read_file", "search", "list_dir"]}),
     ("no_tool_explain", "Explain how a hash map works in two sentences.",              None),
     ("no_tool_thanks",  "Thanks, that's really helpful!",                              None),
     ("no_tool_opinion", "In your opinion, are tabs or spaces better?",                 None),
@@ -143,7 +160,7 @@ def main():
     try:
         A.set_workspace(ws)
         payload = A.tools_payload()
-        tools, commands = payload["tools"], payload["commands"]
+        tools, commands = list(payload["tools"]) + [FINISH_RUN_DEF], payload["commands"]   # append the client-only finish_run
         system = load_system() + commands_note(commands)
         if not system.strip():
             print("WARNING: could not extract SYSTEM from tools.js", file=sys.stderr)

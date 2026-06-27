@@ -55,6 +55,10 @@ window.DS4_CONFIG = {
 
   contextWarnPct: 0.80,         // agent gets a "wrap up" notice at this fill
   contextDangerPct: 0.92,       // agent gets a stronger "stop exploring" notice at this fill
+  // On Loop, if the model never calls finish_run, these force a context clear so it can't stay pinned full
+  // (re-prefilling huge chunks every turn). The model still gets its wrap-up window first (danger < force).
+  contextForceClearPct: 0.97,   // hard ceiling: cross this fill -> the loop force-clears (carrying a summary)
+  contextForceClearTurns: 2,    // OR force-clear after the danger nudge persists this many turns without a finish
   // maxOutputTokens: 2048,     // optional hard output cap (default: omit -> server default, auto-clamped to fit)
   serverCtx: 32768,             // conservative fallback (the small-box limit) used ONLY when the sidecar can't
                                 //   report --ctx; the live sidecar value always wins, so the safety net never goes dark

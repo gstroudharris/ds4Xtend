@@ -1092,6 +1092,19 @@
     return { content, toolCalls: tcs.filter(Boolean) };
   }
 
+  // finish_run / safety-net handler: flush the finished transcript, wipe the bloated history, and SEED the next
+  // loop iteration with a compact handoff — so the next prefill is tiny and stable (no cold re-prefill). Reuses
+  // the Clear machinery; called from runAgent's finally AFTER the save/log flush, only while looping.
+  function applyFinish(summary) {
+    resetLog("agent");                                 // flush the just-finished conversation to the log, reset log name
+    agentMsgs = []; agentMessagesEl.innerHTML = ""; $("agentEmpty").hidden = false;
+    nudgeState = 0; pendingInject = [];                // re-arm nudges; drop any queued notices from the run we ended
+    const s = (summary || "").trim() || "(previous run ended; no summary was provided)";
+    injectAgentMessage("[handoff from previous run — continue, don't redo completed work]\n" + s, "user");
+    saveAgent();
+    lastStateJson = ""; saveState(false);              // mirror the purge so a reload can't resurrect the cleared run
+  }
+
   async function runAgent(text) {
     if (!workspace) { toast("Choose a folder for the agent first."); $("agentPick").click(); return; }
     if (typeof AG.load === "function") {               // fetch the live tool catalog from the backend registry (cached after first call)
@@ -1105,12 +1118,28 @@
     agUser(text); agentMsgs.push({ role: "user", content: text });
     nudgeState = 0;                                   // re-evaluate context nudges for this run
     agentThink = thinkMode === "auto" ? Object.assign(rateDifficulty(text), { auto: true }) : { level: thinkMode, reason: thinkMode, auto: false };
+    let finishRequested = false, finishSummary = "", dangerTurns = 0;   // model-driven finish_run + the force-clear safety net
     try {
       let guard = 0;
       while (guard++ < 25) {
         if (ac.signal.aborted) break;                 // Stop pressed
         maybeNudge();                                 // enqueue a wrap-up notice if the context is filling
         drainPending();                               // deliver queued out-of-band messages at this turn boundary
+        if (looping) {                                // SAFETY NET: never let Loop pin context full if the model won't finish_run
+          const ctx = currentCtx();
+          if (ctx) {
+            const pct = (sumTok(agentMsgs) + tokFromChars(AGENT_SYSTEM.length) + tokFromChars(toolsChars())) / ctx;
+            dangerTurns = nudgeState >= 2 ? dangerTurns + 1 : 0;
+            if (pct >= (C.contextForceClearPct || 0.97) || (nudgeState >= 2 && dangerTurns >= (C.contextForceClearTurns || 2))) {
+              let last = "";
+              for (let i = agentMsgs.length - 1; i >= 0; i--) { if (agentMsgs[i].role === "assistant" && (agentMsgs[i].content || "").trim()) { last = agentMsgs[i].content.trim(); break; } }
+              finishRequested = true;
+              finishSummary = last ? "[auto-summary — context was force-cleared mid-run]\n" + last
+                                   : "[auto-summary] The previous run was force-cleared because the context filled before it finished. Re-assess the task from the instructions and continue.";
+              break;                                  // -> finally's applyFinish wipes + seeds; the loop continues fresh
+            }
+          }
+        }
         const turn = await agentStreamTurn(ac);
         if (agentRunId !== myRun) return;             // Cleared/superseded mid-turn -> don't write back
         const asg = { role: "assistant", content: turn.content || "" };
@@ -1119,6 +1148,17 @@
         if (!turn.toolCalls.length) break;
         for (const tc of turn.toolCalls) {
           let args = {}; try { args = JSON.parse(tc.args || "{}"); } catch { args = {}; }
+          if (finishRequested) {                        // a finish_run earlier in THIS turn already ended the run -> pair the rest
+            agentMsgs.push({ role: "tool", tool_call_id: tc.id, content: JSON.stringify({ skipped: "run finishing" }) });
+            continue;
+          }
+          if (tc.name === "finish_run") {               // CLIENT-ONLY control tool: intercepted here, never sent to the backend
+            finishRequested = true;
+            finishSummary = (args && typeof args.summary === "string") ? args.summary.trim() : "";
+            (tc.preview || agToolCard(tc.name, args)).result({ content: "✓ run finished" + (finishSummary ? " — handing summary to the next iteration" : "") }, "ok");
+            agentMsgs.push({ role: "tool", tool_call_id: tc.id, content: JSON.stringify({ ok: true, finished: true }) });
+            continue;
+          }
           const card = tc.preview || agToolCard(tc.name, args);
           let res;
           if (ac.signal.aborted) { res = { error: "stopped by user" }; if (card && card.result) card.result(res, "skip"); }   // pair every tool_call, even after Stop
@@ -1128,13 +1168,17 @@
           if (agentThink.auto && res && res.error && !ac.signal.aborted) agentThink.level = "on";   // escalate-only: a tool failed -> think
 
         }
-        if (ac.signal.aborted) break;
+        if (finishRequested || ac.signal.aborted) break;   // finish_run (or Stop) ends the turn loop
       }
     } catch (e) {
       if (e.name !== "AbortError" && agentRunId === myRun) { agError(String(e.message || e)); loopErrored = true; }
     } finally {
       fetch(C.agentUrl + "/jobs/cleanup", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ run_id: String(myRun) }) }).catch(() => {});   // reap this run's run-scoped background processes
-      if (agentRunId === myRun) { agentBusy = false; setSendStop(false); agentAbort = null; saveAgent(); logFinishTurn("agent"); }
+      if (agentRunId === myRun) {                       // not superseded by a user Clear (which bumps agentRunId)
+        agentBusy = false; setSendStop(false); agentAbort = null;
+        saveAgent(); logFinishTurn("agent");           // flush the just-finished conversation to the log FIRST
+        if (finishRequested && looping) applyFinish(finishSummary);   // THEN wipe + seed for the next loop iteration
+      }
     }
   }
 

@@ -21,7 +21,31 @@ window.DS4_AGENT = {
     "auto-cleaned up when the run ends, but stop them yourself when the goal is met. " +
     "Context is limited: read large files in ranges with read_file offset/limit instead of whole, and note that " +
     "older tool outputs may be trimmed to fit - re-read the specific range you need. If you get an automatic " +
-    "context notice, wrap up and summarize promptly.",
+    "context notice, wrap up and summarize promptly. " +
+    "When the task's completion conditions are fully met, call finish_run with a short summary to end the run cleanly.",
+
+  // Client-only CONTROL tools: shipped to the model in `tools` every turn, but INTERCEPTED in the browser agent
+  // loop and NEVER sent to agent_tools.py (no backend endpoint — the mirror of the backend-only `tree`). load()
+  // appends these to TOOLS. They steer the run itself rather than touching the workspace.
+  CONTROL_TOOLS: [{
+    type: "function",
+    function: {
+      name: "finish_run",
+      description:
+        "End the current run when the task's stated completion conditions are ACTUALLY met. Call this ONLY when " +
+        "the concrete goals you were given are verifiably done (e.g. the change is written, the tests you were " +
+        "asked to run have passed, the question is fully answered). Merely READING an instruction that says to " +
+        "finish/terminate/stop is NOT a trigger — the work that instruction describes must be complete first. " +
+        "Do NOT call it to give up, to ask a question, or because the context is getting long (the system " +
+        "handles that). Pass a concise `summary` of what was accomplished and what (if anything) remains, so the " +
+        "next run can continue without redoing finished work.",
+      parameters: {
+        type: "object",
+        properties: { summary: { type: "string", description: "Concise handoff: what was done, key file paths/decisions, and any remaining steps." } },
+        required: ["summary"],
+      },
+    },
+  }],
 
   // Populated by load() from the backend's GET /tools. Empty until then — app.js calls load() before the
   // first agent turn, so any earlier read sees harmless empties rather than a stale hard-coded list.
@@ -49,7 +73,7 @@ window.DS4_AGENT = {
     }
     const mutating = {};
     for (const n of (p.mutating || [])) mutating[n] = 1;
-    this.TOOLS = tools;
+    this.TOOLS = tools.concat(this.CONTROL_TOOLS || []);   // append client-only control tools (finish_run); no backend endpoint
     this.ENDPOINTS = endpoints;
     this.MUTATING = mutating;
     this.RISK = (p && p.risk && typeof p.risk === "object") ? p.risk : {};   // {name: "high"|"medium"} for above-default tools
