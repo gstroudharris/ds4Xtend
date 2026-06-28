@@ -61,7 +61,12 @@ window.DS4_CONFIG = {
   // net rather than the model's judgment. On the slow box every turn spent near-full costs a big prefill, so
   // clearing at 0.90 (was 0.97) trades a little working room per iteration for much less prefill thrash. The model
   // still gets its warn(0.80) -> danger(0.85) wrap-up windows first, so the invariant danger < force holds.
-  contextForceClearPct: 0.90,   // hard ceiling: cross this fill -> the loop force-clears (carrying a summary)
+  contextForceClearPct: 0.90,   // hard ceiling (capable boxes): cross this fill -> the loop force-clears (carrying a summary)
+  contextForceClearPctConstrained: 0.80,  // CONSTRAINED boxes (slow/iGPU backend, small ctx, slow prefill) reset EARLIER:
+                                //   below fitForSend's ~0.9 trim point, so we reset (append-only after) instead of
+                                //   letting trimming mutate the prompt prefix — which busts ds4's KV reuse and forces a
+                                //   full, slow re-prefill every turn. Capable boxes keep 0.90 (trimming is cheap there).
+                                //   The frontend picks between these per box via forceClearPct() in app.js.
   contextForceClearTurns: 2,    // OR force-clear after the danger nudge persists this many turns without a finish
   // maxOutputTokens: 2048,     // optional hard output cap (default: omit -> server default, auto-clamped to fit)
   serverCtx: 32768,             // conservative fallback (the small-box limit) used ONLY when the sidecar can't

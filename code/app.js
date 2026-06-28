@@ -417,6 +417,19 @@
   let lastPrefillTps = null;     // last measured prefill throughput (t/s), so "auto" can fit this box's real speed
   let lastCtxUsed = null;        // last measured occupancy, so we can re-render if ctx arrives late
   function currentCtx() { return serverCtx || C.serverCtx || null; }
+  // Adaptive force-clear threshold. On a CONSTRAINED box (streaming/iGPU backend, small ctx, or measured-slow prefill)
+  // reset the loop EARLY — before fitForSend's ~0.9 trim point — because trimming mutates the prompt prefix and busts
+  // ds4's KV-prefix reuse, forcing a full (and on a weak box, very slow) re-prefill every turn. Resetting first keeps
+  // the conversation append-only between resets, so ds4 reuses the prefix and prefills only the new tokens. Capable
+  // boxes (fast CUDA, big ctx) keep the higher default — there a trim's re-prefill is cheap, so we let context grow.
+  function forceClearPct() {
+    const base = C.contextForceClearPct || 0.90;
+    const be = String(serverBackend || "").toLowerCase();
+    const constrained = (be === "rocm" || be === "amd" || be === "cpu")
+                     || (currentCtx() || 32768) <= 40000
+                     || (lastPrefillTps != null && lastPrefillTps < 100);   // t/s; CUDA prefill is far higher
+    return constrained ? Math.min(base, C.contextForceClearPctConstrained || 0.80) : base;
+  }
   // Cap (chars) on the tool output the MODEL sees per call — the agent's biggest prefill cost. A number in
   // config pins it; "auto" scales to this box: seed by backend, refine toward a prefill-time budget once we've
   // measured prefill t/s, clamped to [4k, 25% of the context window]. Keeps tool prefills fast on a weak iGPU.
@@ -1137,7 +1150,7 @@
           if (ctx) {
             const pct = (sumTok(agentMsgs) + tokFromChars(AGENT_SYSTEM.length) + tokFromChars(toolsChars())) / ctx;
             dangerTurns = nudgeState >= 2 ? dangerTurns + 1 : 0;
-            if (pct >= (C.contextForceClearPct || 0.97) || (nudgeState >= 2 && dangerTurns >= (C.contextForceClearTurns || 2))) {
+            if (pct >= forceClearPct() || (nudgeState >= 2 && dangerTurns >= (C.contextForceClearTurns || 2))) {
               // The model won't stop on its own (it rationalizes "one more check"), so TAKE ITS TOOLS AWAY for one
               // turn: a tool-less reply it can't dodge -> capture that as the handoff summary (far better than the
               // last half-thought). finally's applyFinish then wipes + seeds the next run with this real summary.
