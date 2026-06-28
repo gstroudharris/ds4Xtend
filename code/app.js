@@ -1026,7 +1026,8 @@
     };
   }
 
-  async function agentStreamTurn(ac) {
+  async function agentStreamTurn(ac, opts) {
+    opts = opts || {};                 // { noTools:true } -> a tool-less turn the model cannot dodge (forces a wrap-up summary)
     const ui = agAssistant();
     let content = "", reasoning = "", tcs = [], previews = {}, tFirst = null, outTok = 0, usage = null, finishReason = null;
     let sentMsgs = agentMsgs;          // function-scoped: assigned in the stream loop, read again at calibration AFTER the try/finally
@@ -1037,12 +1038,12 @@
     try {
     let res, level = 0, tries = 0;
     for (;;) {
-      const toolsChrs = toolsChars();
+      const toolsChrs = opts.noTools ? 0 : toolsChars();   // a forced summary turn sends NO tools -> all budget goes to the reply
       sentMsgs = fitForSend(AGENT_SYSTEM, agentMsgs, { level: level, protectFirst: true, extraTok: tokFromChars(toolsChrs) });   // trim to fit --ctx (reserve the tool-schema tokens)
       const mtA = maxTokensFor(sumTok(sentMsgs) + tokFromChars(AGENT_SYSTEM.length) + tokFromChars(toolsChrs));
       res = await fetch(C.serverUrl + "/v1/chat/completions", {
         method: "POST", headers: { "Content-Type": "application/json" }, signal: ac.signal,
-        body: JSON.stringify({ model: C.model, stream: true, stream_options: { include_usage: true }, tools: toolDefs(), tool_choice: "auto", messages: [{ role: "system", content: AGENT_SYSTEM + commandsNote() }].concat(sentMsgs), ...thinkSpread(agentThink.level), ...(mtA ? { max_tokens: mtA } : {}) }),
+        body: JSON.stringify({ model: C.model, stream: true, stream_options: { include_usage: true }, ...(opts.noTools ? {} : { tools: toolDefs(), tool_choice: "auto" }), messages: [{ role: "system", content: AGENT_SYSTEM + commandsNote() }].concat(sentMsgs), ...thinkSpread(agentThink.level), ...(mtA ? { max_tokens: mtA } : {}) }),
       });
       if (res.ok) break;
       const errTxt = await res.text();
@@ -1137,11 +1138,18 @@
             const pct = (sumTok(agentMsgs) + tokFromChars(AGENT_SYSTEM.length) + tokFromChars(toolsChars())) / ctx;
             dangerTurns = nudgeState >= 2 ? dangerTurns + 1 : 0;
             if (pct >= (C.contextForceClearPct || 0.97) || (nudgeState >= 2 && dangerTurns >= (C.contextForceClearTurns || 2))) {
-              let last = "";
-              for (let i = agentMsgs.length - 1; i >= 0; i--) { if (agentMsgs[i].role === "assistant" && (agentMsgs[i].content || "").trim()) { last = agentMsgs[i].content.trim(); break; } }
+              // The model won't stop on its own (it rationalizes "one more check"), so TAKE ITS TOOLS AWAY for one
+              // turn: a tool-less reply it can't dodge -> capture that as the handoff summary (far better than the
+              // last half-thought). finally's applyFinish then wipes + seeds the next run with this real summary.
+              injectAgentMessage("[automatic context notice] Context is full — STOP. Do NOT call any tools. Reply now with a concise handoff: what you changed (key files/decisions) and what still remains for the next run.");
+              drainPending();
+              let wrap = { content: "", toolCalls: [] };
+              try { wrap = await agentStreamTurn(ac, { noTools: true }); } catch (e) { /* keep going with an empty summary */ }
+              if (agentRunId !== myRun) return;       // Cleared/superseded mid-summary -> don't write back
+              const sum = (wrap.content || "").trim();
+              if (sum) agentMsgs.push({ role: "assistant", content: sum });   // show + log the real summary before the wipe
               finishRequested = true;
-              finishSummary = last ? "[auto-summary — context was force-cleared mid-run]\n" + last
-                                   : "[auto-summary] The previous run was force-cleared because the context filled before it finished. Re-assess the task from the instructions and continue.";
+              finishSummary = sum || "[auto-summary] Context filled before the run finished; re-assess from the instructions and continue.";
               break;                                  // -> finally's applyFinish wipes + seeds; the loop continues fresh
             }
           }
