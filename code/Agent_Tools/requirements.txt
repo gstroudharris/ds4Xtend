@@ -1,0 +1,13 @@
+# Agent-tool runtime dependencies.
+# The agent backend (agent_tools.py + the file/process tools) is stdlib-only; these are needed ONLY by the
+# web_search / web_scrape tools. requests, lxml, beautifulsoup4 are already present system-wide.
+#
+# System Python here is PEP-668 "externally-managed" — install into a venv, or with: pip install --break-system-packages.
+# Pin before deploying: no-key search scrapes engine HTML and is fragile (engines change), so version drift can break it.
+
+ddgs>=9.0          # self-hosted, no-API-key web search (in-process metasearch; transitively brings primp + lxml + httpx)
+trafilatura>=1.12  # HTML -> clean main-content markdown (benchmark-leading, ~35x cheaper than ReadabiliPy)
+
+# Intentionally EXCLUDED (memory): no playwright / scrapling[fetchers] / camoufox browser tiers in v1.
+# Escalation tier (JS-render / anti-bot) would add one of those on demand — see the web_scrape `render` note.
+# Optional: browserforge  # richer realistic header/fingerprint generation; v1 uses a hardcoded coherent profile.

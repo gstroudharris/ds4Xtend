@@ -852,6 +852,12 @@
   async function callTool(name, args, ac) {
     const ep = toolEp(name);
     if (!ep) return { error: "unknown tool: " + name };
+    let sendArgs = args || {};
+    if (name === "web_scrape") {                            // ingest only as much RELEVANT content as fits this box:
+      const budget = Math.max(1500, Math.floor(toolCapChars() * 0.8));   // cap web_scrape to ~the per-call budget so its
+      const want = Number(sendArgs.max_chars) || 0;                      // BM25/max_chars trim (relevance-ordered) BINDS,
+      if (!want || want > budget) sendArgs = Object.assign({}, sendArgs, { max_chars: budget });   // not capToolOutput's blunt middle-cut
+    }
     // Abort the fetch on EITHER the run's Stop (ac) OR a timeout, so a wedged backend can't hang the loop and
     // Stop interrupts an in-flight tool call. (ac is optional — non-agent callers still get the timeout.)
     const ctl = new AbortController();
@@ -860,7 +866,7 @@
     const ms = (name === "execute" || name === "run_command") ? (C.executeTimeoutMs || 130000) : (C.toolTimeoutMs || 30000);   // commands may run test suites/builds
     const timer = setTimeout(() => ctl.abort(new DOMException("timeout", "TimeoutError")), ms);
     try {
-      const r = await fetch(C.agentUrl + ep, { method: "POST", headers: { "Content-Type": "application/json", "X-DS4-Run-Id": String(agentRunId) }, body: JSON.stringify(args || {}), signal: ctl.signal });   // tag spawned background jobs with the owning run
+      const r = await fetch(C.agentUrl + ep, { method: "POST", headers: { "Content-Type": "application/json", "X-DS4-Run-Id": String(agentRunId) }, body: JSON.stringify(sendArgs), signal: ctl.signal });   // tag spawned background jobs with the owning run
       return await r.json();
     } catch (e) {
       if (ac && ac.signal.aborted) return { error: "stopped by user" };

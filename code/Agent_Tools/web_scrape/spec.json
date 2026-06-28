@@ -1,0 +1,18 @@
+{
+  "function": {
+    "name": "web_scrape",
+    "description": "Fetch ONE web page and return its main content as clean markdown (boilerplate stripped) plus metadata. Get the url from web_search first. ALWAYS pass a 'query' describing what you're looking for — it returns only the relevant sections; WITHOUT a query you get just the start of the page and may miss info deeper down. Does not run JavaScript.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "url": { "type": "string", "description": "The http(s) URL to fetch (e.g. a web_search result's url)." },
+        "query": { "type": "string", "description": "What you're looking for on the page. Strongly recommended: returns only the relevant sections (keeps output small). Without it you get the page from the start." },
+        "max_chars": { "type": "integer", "description": "Max characters of content to return (default 6000; the system trims further to fit the context window)." },
+        "offset": { "type": "integer", "description": "Character offset to resume from when paging through a long page (default 0)." }
+      },
+      "required": ["url"]
+    }
+  },
+  "mutating": false,
+  "risk": "medium"
+}

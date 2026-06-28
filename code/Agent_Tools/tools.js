@@ -21,6 +21,9 @@ window.DS4_AGENT = {
     "fix any failures before continuing. For a server or other long-running process, use execute with background:true " +
     "and a goal, poll it with process_output, and stop_process as soon as you're done — background processes are " +
     "auto-cleaned up when the run ends, but stop them yourself when the goal is met. " +
+    "To look something up online, use web_search for ranked results, read the snippets, then web_scrape a specific " +
+    "url only when a snippet isn't enough — ALWAYS give web_scrape a query (what you're looking for) so it returns " +
+    "only the relevant part; without one you get just the start of the page. " +
     "Context is limited: read large files in ranges with read_file offset/limit instead of whole, and note that " +
     "older tool outputs may be trimmed to fit - re-read the specific range you need. If you get an automatic " +
     "context notice, wrap up and summarize promptly. " +

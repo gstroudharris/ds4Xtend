@@ -1,6 +1,8 @@
 # Python
 __pycache__/
 *.py[cod]
+# Agent_Tools web-tool dependencies live in a local venv (per box, never committed)
+code/Agent_Tools/.venv/
 
 # Editor / OS
 .vscode/

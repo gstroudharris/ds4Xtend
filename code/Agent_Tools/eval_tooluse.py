@@ -113,6 +113,9 @@ SCENARIOS = [
     # finish_run JUDGMENT: call it only when the work is genuinely done, not just because an instruction mentions finishing.
     ("finish_done",     "You have already created hello.txt with the required content and the tests you were asked to run all passed. If the task is complete, finish the run.", {"tools": ["finish_run"]}),
     ("finish_premature","The task spec says: 'After you implement parse_config() in config.py and its tests pass, finish the run.' parse_config does not exist yet and no tests have run. Do the right next thing.", {"tools": ["write_file", "edit_file"], "prep": ["read_file", "search", "list_dir"]}),
+    # web tools: route "find/look up online" -> web_search, "read/open <url>" -> web_scrape (offered via the live registry)
+    ("web_find",        "Find the official trafilatura documentation online.",          {"tools": ["web_search"], "args": {"query": "trafilatura"}}),
+    ("web_read_url",    "Open https://example.com/article and summarize what it says.", {"tools": ["web_scrape"], "args": {"url": "example.com"}}),
     ("no_tool_explain", "Explain how a hash map works in two sentences.",              None),
     ("no_tool_thanks",  "Thanks, that's really helpful!",                              None),
     ("no_tool_opinion", "In your opinion, are tabs or spaces better?",                 None),

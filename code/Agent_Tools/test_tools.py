@@ -259,9 +259,10 @@ class TestRegistry(unittest.TestCase):
 
     FILE_TOOLS = ["delete", "edit_file", "list_dir", "mkdir", "read_file", "search", "write_file"]
     EXEC_TOOLS = ["execute", "run_command", "list_processes", "process_output", "stop_process"]
+    WEB_TOOLS = ["web_scrape", "web_search"]                     # network tools: mutating:false, validate(); scrape risk:medium
 
     def test_registry_has_file_tools_plus_execution(self):
-        self.assertEqual(sorted(A.REGISTRY), sorted(self.FILE_TOOLS + self.EXEC_TOOLS))
+        self.assertEqual(sorted(A.REGISTRY), sorted(self.FILE_TOOLS + self.EXEC_TOOLS + self.WEB_TOOLS))
         for name in self.FILE_TOOLS:
             r = A.REGISTRY[name]
             self.assertTrue(callable(r["run"]))
@@ -270,12 +271,18 @@ class TestRegistry(unittest.TestCase):
         self.assertEqual(A.REGISTRY["execute"]["risk"], "high")     # the execution tools carry the new metadata
         self.assertTrue(callable(A.REGISTRY["execute"]["validate"]))
         self.assertTrue(callable(A.REGISTRY["run_command"]["validate"]))
+        # web tools reach the internet (not the workspace): non-mutating, with a validate() guard; scrape is medium-risk
+        for name in self.WEB_TOOLS:
+            self.assertFalse(A.REGISTRY[name]["mutating"])
+            self.assertTrue(callable(A.REGISTRY[name]["validate"]))
+        self.assertEqual(A.REGISTRY["web_search"]["risk"], "low")
+        self.assertEqual(A.REGISTRY["web_scrape"]["risk"], "medium")
 
     def test_payload_shape(self):
         p = A.tools_payload()                             # default registry, no .ds4 manifest in CWD
-        self.assertEqual(len(p["tools"]), len(self.FILE_TOOLS) + len(self.EXEC_TOOLS))
+        self.assertEqual(len(p["tools"]), len(self.FILE_TOOLS) + len(self.EXEC_TOOLS) + len(self.WEB_TOOLS))
         self.assertEqual(sorted(p["mutating"]), ["delete", "edit_file", "execute", "mkdir", "run_command", "write_file"])
-        self.assertEqual(p["risk"], {"execute": "high"})  # only execute is above default risk (process tools are low)
+        self.assertEqual(p["risk"], {"execute": "high", "web_scrape": "medium"})   # above-default risk: execute + scrape
 
     def _fixture_dir(self):
         base = tempfile.mkdtemp(prefix="ds4reg_")
@@ -493,6 +500,123 @@ class TestAuditFixes(ToolBase):
     def test_execute_rejects_both_forms(self):
         with self.assertRaises(ValueError):                             # argv AND shell both set -> ambiguous, refused
             A.REGISTRY["execute"]["validate"]({"argv": ["echo", "hi"], "shell": True, "command": "echo hi"})
+
+
+# ---------------------------------------------------------------------------------------------------------------
+# Web tools (web_search / web_scrape). DEP-FREE: the network/extractor libs (ddgs, primp, trafilatura) are
+# monkeypatched or faked, so this runs under plain `python3` with no venv. As elsewhere, the point is the FAILURE
+# modes: SSRF refusal, that BM25 actually narrows, byte caps + paging, the untrusted-content label, and search
+# dedupe/normalize.
+import sys
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import _web_common as _wc
+
+
+class TestWebSSRF(unittest.TestCase):
+    def test_validate_url_blocks(self):
+        for u in ["http://127.0.0.1/", "http://10.0.0.1/x", "http://169.254.169.254/latest/meta-data/",
+                  "http://localhost:8080/", "https://192.168.1.1/", "http://host.internal/",
+                  "file:///etc/passwd", "ftp://h/x", ""]:
+            with self.assertRaises(ValueError, msg="should block %r" % u):
+                _wc.validate_url(u)
+
+    def test_scrape_run_refuses_metadata_endpoint(self):
+        res = run("web_scrape", {"url": "http://169.254.169.254/latest/meta-data/"}, make_ctx())
+        self.assertIn("non-public", res.get("error", ""))
+
+
+class TestWebBM25(unittest.TestCase):
+    def setUp(self):
+        pad = " filler clause to push this paragraph past the chunk-merge threshold so chunks stay distinct." * 3
+        self.text = "\n\n".join([
+            "Cooking pasta: boil water, add salt, stir occasionally." + pad,
+            "The capital of France is Paris on the river Seine, home of the Eiffel Tower." + pad,
+            "Quarterly tax filing deadlines, invoices, and accounting spreadsheets." + pad,
+        ])
+
+    def test_keeps_relevant_drops_irrelevant(self):
+        out = _wc.bm25_filter(self.text, "capital of France Paris Seine", max_chars=400)
+        self.assertIn("Paris", out)
+        self.assertNotIn("tax", out)
+        self.assertNotIn("pasta", out)
+
+    def test_empty_query_returns_head(self):
+        self.assertTrue(_wc.bm25_filter(self.text, "", 30).startswith("Cooking"))
+
+
+class TestWebScrapeWindowing(unittest.TestCase):
+    """web_scrape.run with fetch/extract/cache monkeypatched: cap, offset paging, truncated, untrusted label, and
+    metadata passthrough — no network, no trafilatura."""
+    def setUp(self):
+        self._save = {k: getattr(_wc, k) for k in ("fetch", "extract_markdown", "cache_get", "cache_set", "bm25_filter")}
+        full = "alpha bravo charlie delta echo foxtrot. " * 200          # ~8000 chars
+        _wc.fetch = lambda url, **k: {"final_url": url, "status": 200, "content_type": "text/html",
+                                      "html": "<html>x</html>", "bytes": 9, "truncated": False}
+        _wc.extract_markdown = lambda html, url=None: (full, "Demo Title")
+        _wc.cache_get = lambda *a, **k: None
+        _wc.cache_set = lambda *a, **k: None
+
+    def tearDown(self):
+        for k, v in self._save.items():
+            setattr(_wc, k, v)
+
+    def test_cap_label_metadata(self):
+        r = run("web_scrape", {"url": "https://example.com/a", "max_chars": 600}, make_ctx())
+        self.assertEqual(r["status"], 200)
+        self.assertEqual(r["title"], "Demo Title")
+        self.assertEqual(r["final_url"], "https://example.com/a")
+        self.assertTrue(r["content"].startswith("[untrusted web content"))
+        self.assertEqual(r["chars"], 600)                 # 600 >= the tool's 500-char floor, so not clamped
+        self.assertTrue(r["truncated"])
+
+    def test_offset_paging(self):
+        r = run("web_scrape", {"url": "https://example.com/b", "max_chars": 600, "offset": 600}, make_ctx())
+        self.assertEqual(r["chars"], 600)
+        self.assertTrue(r["truncated"])
+
+    def test_query_invokes_bm25(self):
+        _wc.bm25_filter = lambda text, q, mc, **k: "NARROWED:" + q
+        r = run("web_scrape", {"url": "https://example.com/c", "query": "needle"}, make_ctx())
+        self.assertIn("NARROWED:needle", r["content"])
+
+    def test_no_query_truncated_note(self):                  # nudge the model to pass a query when it scraped blind
+        r = run("web_scrape", {"url": "https://example.com/d", "max_chars": 600}, make_ctx())   # no query; content >> 600
+        self.assertTrue(r["truncated"])
+        self.assertIn("query=", r.get("note", ""))
+
+
+class TestWebSearchDedup(unittest.TestCase):
+    """Inject a fake `ddgs` module so dedupe-by-URL + normalize + cap are tested without the real library/network."""
+    def setUp(self):
+        fake = types.ModuleType("ddgs")
+
+        class _DDGS:
+            def text(self, query, **k):
+                return [
+                    {"title": "A",     "href": "https://x.com/1", "body": "first"},
+                    {"title": "A dup", "href": "https://x.com/1", "body": "dup"},      # duplicate url -> dropped
+                    {"title": "B",     "url":  "https://x.com/2", "body": "second"},   # 'url' key variant accepted
+                    {"title": "C",     "href": "",                "body": "no url"},   # empty url -> dropped
+                ]
+        fake.DDGS = _DDGS
+        self._saved_mod = sys.modules.get("ddgs")
+        sys.modules["ddgs"] = fake
+        self._save_cache = (_wc.cache_get, _wc.cache_set)
+        _wc.cache_get = lambda *a, **k: None
+        _wc.cache_set = lambda *a, **k: None
+
+    def tearDown(self):
+        if self._saved_mod is not None:
+            sys.modules["ddgs"] = self._saved_mod
+        else:
+            sys.modules.pop("ddgs", None)
+        _wc.cache_get, _wc.cache_set = self._save_cache
+
+    def test_dedupe_and_normalize(self):
+        res = run("web_search", {"query": "anything", "max_results": 5}, make_ctx())
+        self.assertEqual(res["count"], 2)
+        self.assertEqual([r["url"] for r in res["results"]], ["https://x.com/1", "https://x.com/2"])
+        self.assertTrue(all(set(r) == {"title", "url", "snippet"} for r in res["results"]))
 
 
 if __name__ == "__main__":

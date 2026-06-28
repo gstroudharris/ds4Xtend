@@ -1,0 +1,17 @@
+{
+  "function": {
+    "name": "web_search",
+    "description": "Search the web; returns a ranked list of results (title, url, snippet). No API key. Read the snippets first — only call web_scrape on a result's url when you actually need the full page.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "query": { "type": "string", "description": "What to search for." },
+        "max_results": { "type": "integer", "description": "How many results to return (default 5; keep small to save context)." },
+        "timelimit": { "type": "string", "description": "Optional recency filter: 'd' (past day), 'w' (week), 'm' (month), 'y' (year)." }
+      },
+      "required": ["query"]
+    }
+  },
+  "mutating": false,
+  "risk": "low"
+}

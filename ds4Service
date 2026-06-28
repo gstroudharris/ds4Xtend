@@ -369,7 +369,38 @@ register "metrics-sidecar" "$!"
 printf '    sidecar '; wait_http "http://127.0.0.1:$SIDE_PORT/healthz" 10 && { printf '\n'; ok "sidecar online (model gauge → $(basename "$MODEL"))"; } || { printf '\n'; warn "sidecar slow/own port busy"; }
 
 AGENT_LOG="$RUN_DIR/agent-tools.log"
-( exec python3 "$CODE_DIR/Agent_Tools/agent_tools.py" --port "$AGENT_PORT" ) > "$AGENT_LOG" 2>&1 &
+# web_search / web_scrape need ddgs + trafilatura. System Python is PEP-668 externally-managed, so those deps live in
+# a dedicated venv (--system-site-packages reuses the system requests/lxml). Auto-provision it on first run, and
+# self-heal if the deps don't import (e.g. requirements.txt changed). Every failure path is NON-FATAL: we fall back to
+# plain python3 and the web tools just return an actionable "install" error while the file/exec tools keep working.
+AGENT_VENV="$CODE_DIR/Agent_Tools/.venv"
+AGENT_REQ="$CODE_DIR/Agent_Tools/requirements.txt"
+AGENT_SETUP_LOG="$RUN_DIR/agent-venv-setup.log"
+AGENT_PY="$AGENT_VENV/bin/python"
+if [ -f "$AGENT_REQ" ]; then
+  if [ ! -x "$AGENT_PY" ]; then
+    say "First run: creating the web-tool venv (ddgs + trafilatura)…"
+    python3 -m venv --system-site-packages "$AGENT_VENV" > "$AGENT_SETUP_LOG" 2>&1 \
+      || warn "couldn't create the web-tool venv (is python3-venv installed?) — see $AGENT_SETUP_LOG"
+  fi
+  if [ -x "$AGENT_PY" ]; then
+    # (Re)install when the venv is fresh / requirements.txt changed (content hash) OR the deps don't import.
+    AGENT_REQ_HASH="$(sha256sum "$AGENT_REQ" 2>/dev/null | cut -d' ' -f1)"
+    if [ "$(cat "$AGENT_VENV/.req-hash" 2>/dev/null)" != "$AGENT_REQ_HASH" ] \
+       || ! "$AGENT_PY" -c 'import ddgs, trafilatura' 2>/dev/null; then
+      say "Installing web-tool dependencies (first run or requirements changed)…"
+      if "$AGENT_PY" -m pip install -q -r "$AGENT_REQ" >> "$AGENT_SETUP_LOG" 2>&1 \
+         && "$AGENT_PY" -c 'import ddgs, trafilatura' 2>/dev/null; then
+        printf '%s\n' "$AGENT_REQ_HASH" > "$AGENT_VENV/.req-hash"   # remember what we installed -> skip next time
+        ok "web-tool deps ready (web_search + web_scrape)"
+      else
+        warn "web-tool dep install failed (offline?) — web tools unavailable until it succeeds; see $AGENT_SETUP_LOG"
+      fi
+    fi
+  fi
+fi
+[ -x "$AGENT_PY" ] || AGENT_PY="python3"   # no usable venv -> plain python3 (web tools return an actionable install hint)
+( exec "$AGENT_PY" "$CODE_DIR/Agent_Tools/agent_tools.py" --port "$AGENT_PORT" ) > "$AGENT_LOG" 2>&1 &
 register "agent-tools" "$!"
 printf '    agent-tools '
 if wait_http "http://127.0.0.1:$AGENT_PORT/healthz" 10; then echo; ok "agent-tools online (sandboxed file I/O for Agent mode)"; else echo; warn "agent-tools slow/own port busy"; fi
