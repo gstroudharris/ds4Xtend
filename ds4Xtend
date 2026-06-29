@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ds4Xtend — one-command launcher for the whole DS4 stack:
-#   ds4-server (inference, :8080)  +  metrics sidecar (:8081)  +  ds4Frontend web UI (:8090)
+#   ds4-server (inference, :8080)  +  metrics sidecar (:8081)  +  web UI (:8090)
 #
 # What it does:
 #   1. On first run (or with --setup), asks for + remembers the ds4 install directory;
@@ -353,7 +353,7 @@ else
 fi
 
 # ---------- 4. sidecar + frontend ----------
-say "4. starting sidecar (:$SIDE_PORT) and ds4Frontend (:$WEB_PORT)"
+say "4. starting sidecar (:$SIDE_PORT) and frontend (:$WEB_PORT)"
 SIDE_LOG="$RUN_DIR/sidecar.log"
 mkdir -p "$FRONTEND_DIR/logs"
 # Resolve the ctx to report to the UI's headroom meter + context-nudge safety net (which goes dormant
@@ -429,7 +429,7 @@ if wait_http "http://127.0.0.1:$AGENT_PORT/healthz" 10; then echo; ok "agent-too
 
 WEB_LOG="$RUN_DIR/frontend.log"
 ( cd "$CODE_DIR" && exec python3 "$CODE_DIR/serve.py" --port "$WEB_PORT" ) > "$WEB_LOG" 2>&1 &
-register "ds4Frontend (web)" "$!"
+register "frontend (web)" "$!"
 printf '    frontend '; wait_http "http://127.0.0.1:$WEB_PORT/index.html" 10 && { printf '\n'; ok "frontend online"; } || { printf '\n'; warn "frontend slow/own port busy"; }
 
 # ---------- 4b. open the dashboard ----------

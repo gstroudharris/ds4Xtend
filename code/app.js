@@ -4,6 +4,24 @@
    ============================================================ */
 (() => {
   "use strict";
+
+  // One-time migration of pre-rebrand localStorage keys (ds4Frontend → ds4Xtend): ds4:* → ds4x:*.
+  // Preserves saved conversations, mode, rails, thinking, loop, workspace across the rename. Runs before
+  // any key is read below; idempotent (old keys are removed, so later runs are no-ops). Collect the old
+  // keys first, THEN mutate — setItem/removeItem reindex localStorage, so editing it mid-scan skips keys.
+  try {
+    const oldKeys = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (k && k.startsWith("ds4:")) oldKeys.push(k);
+    }
+    oldKeys.forEach((k) => {
+      const nk = "ds4x:" + k.slice(4);
+      if (localStorage.getItem(nk) === null) localStorage.setItem(nk, localStorage.getItem(k));
+      localStorage.removeItem(k);
+    });
+  } catch (e) {}
+
   const C = window.DS4X_CONFIG || {};
   const $ = (id) => document.getElementById(id);
   const esc = (s) => s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));

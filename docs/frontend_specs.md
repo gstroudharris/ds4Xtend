@@ -5,7 +5,7 @@ COSMIC**, recreating the reference UI (DGX Spark demo build) and adapting its
 telemetry to *this* machine. Talks to `ds4-server` on **`localhost:8080`**.
 
 > Status: **Phases 1–3 implemented and live** (see README). Now a **standalone repo**
-> (`ds4Frontend`), kept separate from the upstream antirez/ds4 checkout it talks to over
+> (`ds4Xtend`), kept separate from the upstream antirez/ds4 checkout it talks to over
 > HTTP. The reference screenshot was a DGX Spark (GB10, unified memory); §7.6 explains how
 > we adapt its memory panel to our discrete-GPU + system-RAM architecture.
 
