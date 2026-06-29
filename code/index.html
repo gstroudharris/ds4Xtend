@@ -3,7 +3,15 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>DS4 · DeepSeek V4 Flash</title>
+  <title>ds4Xtend · DeepSeek V4 Flash</title>
+  <script>
+    /* set the theme attribute before first paint so there's no light/dark flash (FOUC) */
+    (function () {
+      var saved = null; try { saved = localStorage.getItem("ds4x:theme"); } catch (e) {}
+      var sys = matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
+      document.documentElement.setAttribute("data-theme", saved || sys);
+    })();
+  </script>
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
@@ -42,9 +50,14 @@
     <main class="main">
       <header class="topbar">
         <div class="brand">
-          <div class="brand__badge">DS</div>
+          <div class="brand__badge" aria-label="ds4Xtend">
+            <svg class="brand__mark" viewBox="0 0 40 40" role="img" aria-hidden="true">
+              <text class="brand__mark-sub" x="6" y="27">ds4</text>
+              <text class="brand__mark-x" x="27" y="29">X</text>
+            </svg>
+          </div>
           <div class="brand__meta">
-            <div class="brand__title">DeepSeek V4 Flash</div>
+            <div class="brand__title">ds4Xtend</div>
             <div class="brand__sub" id="brandSub">inference dashboard</div>
           </div>
         </div>
@@ -59,6 +72,7 @@
             <span class="status__dot"></span>
             <span class="status__label">ds4-server online</span>
           </div>
+          <button class="rail__icon" id="themeToggle" title="Toggle light / dark theme" aria-label="Toggle theme">◐</button>
         </div>
       </header>
 
@@ -96,7 +110,7 @@
         </div>
         <div class="composer__box">
           <textarea id="input" class="composer__input" rows="1"
-            placeholder="Message DS4… (Enter to send, Shift+Enter for newline)"></textarea>
+            placeholder="Message ds4Xtend… (Enter to send, Shift+Enter for newline)"></textarea>
           <div class="composer__actions">
             <button class="btn btn--ghost" id="clearBtn">Clear</button>
             <button class="btn btn--primary" id="sendBtn">Send</button>

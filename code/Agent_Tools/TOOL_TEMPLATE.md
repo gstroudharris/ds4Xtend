@@ -38,7 +38,7 @@ Agent_Tools/
 
 **Auto-discovery wires everything.** At startup [`agent_tools.py`](agent_tools.py) globs these folders,
 imports each `tool.py`, and serves the combined catalog at **`GET /tools`**. The frontend
-([`tools.js`](tools.js) → `window.DS4_AGENT.load()`) fetches it once and derives the tool list, the
+([`tools.js`](tools.js) → `window.DS4X_AGENT.load()`) fetches it once and derives the tool list, the
 `name → /tools/<name>` endpoints, and the mutating set. Dispatch is generic on both sides.
 
 > **To add a tool: drop a folder with `spec.json` + `tool.py`, then restart the backend. No edits to

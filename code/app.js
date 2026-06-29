@@ -1,10 +1,10 @@
 /* ============================================================
-   DS4 Web Frontend — app logic
+   ds4Xtend — app logic
    Phase 1: shell/theme · 2: chat streaming · 3: telemetry · 4: agent (sandboxed file tools)
    ============================================================ */
 (() => {
   "use strict";
-  const C = window.DS4_CONFIG || {};
+  const C = window.DS4X_CONFIG || {};
   const $ = (id) => document.getElementById(id);
   const esc = (s) => s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
   const setText = (id, v) => { const e = $(id); if (e) { e.textContent = v; e.classList.remove("is-empty"); } };
@@ -30,7 +30,28 @@
 
   const toggle = $("modeToggle");
   toggle.querySelectorAll(".segmented__btn").forEach((btn) =>
-    btn.addEventListener("click", () => { mode = btn.dataset.mode; try { localStorage.setItem("ds4:mode", mode); } catch (e) {} updateView(); if (mode === "agent") syncWorkspace(); }));
+    btn.addEventListener("click", () => { mode = btn.dataset.mode; try { localStorage.setItem("ds4x:mode", mode); } catch (e) {} updateView(); if (mode === "agent") syncWorkspace(); }));
+
+  // theme toggle (light-acrylic / dark-glass) — data-theme is set pre-paint by the inline <head> script
+  const themeBtn = $("themeToggle");
+  function applyTheme(t) {
+    document.documentElement.setAttribute("data-theme", t);
+    try { localStorage.setItem("ds4x:theme", t); } catch (e) {}
+    if (themeBtn) themeBtn.textContent = t === "light" ? "☀" : "☾";
+    if (typeof drawSpark === "function") { try { drawSpark(); } catch (e) {} }   // canvas can't read var() — recolor on switch
+  }
+  if (themeBtn) {
+    themeBtn.textContent = (document.documentElement.getAttribute("data-theme") === "light") ? "☀" : "☾";
+    themeBtn.addEventListener("click", () =>
+      applyTheme(document.documentElement.getAttribute("data-theme") === "light" ? "dark" : "light"));
+  }
+  try {
+    matchMedia("(prefers-color-scheme: light)").addEventListener("change", (e) => {
+      let saved = null; try { saved = localStorage.getItem("ds4x:theme"); } catch (_) {}
+      if (!saved) applyTheme(e.matches ? "light" : "dark");
+    });
+  } catch (e) {}
+
   function updateView() {
     const agent = mode === "agent";
     toggle.classList.toggle("is-agent", agent);
@@ -46,7 +67,7 @@
     const ae = $("agentEmpty"); if (ae) ae.hidden = agentMsgs.length > 0;
     input.placeholder = agent
       ? (workspace ? "Ask the agent to read or edit files in the folder…" : "Choose a folder for the agent first…")
-      : "Message DS4… (Enter to send, Shift+Enter for newline)";
+      : "Message ds4Xtend… (Enter to send, Shift+Enter for newline)";
     setSendStop();   // reflect Send/Loop on mode switch (loop is agent-only)
     reflectThink();  // Chat shows the on/off toggle; Agent shows on/off/auto
   }
@@ -69,8 +90,8 @@
     if (mq.addEventListener) mq.addEventListener("change", render); else mq.addListener(render);
     railResyncs.push(() => { try { collapsed = localStorage.getItem(lsKey) === "1"; } catch (e) {} render(); });   // re-apply after loadState seeds localStorage
   }
-  wireRail("leftRail", "leftRailToggle", { hc: "«", he: "»", vc: "▲", ve: "▼" }, "ds4:lrail");
-  wireRail("rightRail", "rightRailToggle", { hc: "»", he: "«", vc: "▼", ve: "▲" }, "ds4:rrail");
+  wireRail("leftRail", "leftRailToggle", { hc: "«", he: "»", vc: "▲", ve: "▼" }, "ds4x:lrail");
+  wireRail("rightRail", "rightRailToggle", { hc: "»", he: "«", vc: "▼", ve: "▲" }, "ds4x:rrail");
 
   /* ---------------- composer ---------------- */
   const input = $("input");
@@ -86,13 +107,13 @@
   thinkChip.addEventListener("click", () => {                // CHAT thinking: a plain on/off toggle, like Following
     if (looping) return;
     chatThink = chatThink === "on" ? "off" : "on";
-    try { localStorage.setItem("ds4:chatThink", chatThink); } catch (e) {}
+    try { localStorage.setItem("ds4x:chatThink", chatThink); } catch (e) {}
     reflectThink();
   });
   thinkSwitch.querySelectorAll(".thinksw__btn").forEach((b) => b.addEventListener("click", () => {   // AGENT thinking: on/off/auto
     if (looping) return;                                     // unselectable mid-loop, like the Chat/Agent toggle
     thinkMode = b.dataset.tm;
-    try { localStorage.setItem("ds4:thinking", thinkMode); } catch (e) {}
+    try { localStorage.setItem("ds4x:thinking", thinkMode); } catch (e) {}
     reflectThink();
   }));
   reflectThink();
@@ -110,7 +131,7 @@
   }
   function thinkSpread(level) { return level === "off" ? { thinking: { type: "disabled" } } : {}; }
   function logDifficulty(rec) {
-    try { const k = "ds4:diffLog", a = JSON.parse(localStorage.getItem(k) || "[]"); a.push(rec); while (a.length > (C.diffLogMax || 200)) a.shift(); localStorage.setItem(k, JSON.stringify(a)); } catch (e) {}
+    try { const k = "ds4x:diffLog", a = JSON.parse(localStorage.getItem(k) || "[]"); a.push(rec); while (a.length > (C.diffLogMax || 200)) a.shift(); localStorage.setItem(k, JSON.stringify(a)); } catch (e) {}
   }
   input.addEventListener("input", () => autosize(input));
   input.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); if (streaming || agentBusy || looping) return; if (loopMode && mode === "agent") startLoop(); else send(); } });
@@ -158,7 +179,7 @@
   let stick = true, rendering = false;
   const stickToggle = $("stickToggle");
   function reflectStick() { stickToggle.classList.toggle("is-on", stick); stickToggle.textContent = stick ? "↓ Following" : "↓ Follow"; }
-  function saveStick() { try { localStorage.setItem("ds4:stick", stick ? "1" : "0"); } catch (e) {} }
+  function saveStick() { try { localStorage.setItem("ds4x:stick", stick ? "1" : "0"); } catch (e) {} }
   function scrollDown(force) { if (rendering) return; if (force || stick) conversationEl.scrollTop = conversationEl.scrollHeight; }
   conversationEl.addEventListener("scroll", () => {
     const atBottom = conversationEl.scrollHeight - conversationEl.scrollTop - conversationEl.clientHeight < 48;
@@ -327,7 +348,7 @@
 
   /* ---------------- Send / Loop toggle + loop driver ---------------- */
   const slToggle = $("sendLoopToggle");
-  try { loopMode = localStorage.getItem("ds4:loop") === "1"; } catch (e) {}
+  try { loopMode = localStorage.getItem("ds4x:loop") === "1"; } catch (e) {}
   function reflectSL() {
     slToggle.classList.toggle("is-loop", loopMode);
     slToggle.querySelectorAll(".seg2__btn").forEach((x) => x.classList.toggle("is-active", (x.dataset.sl === "loop") === loopMode));
@@ -336,7 +357,7 @@
   slToggle.querySelectorAll(".seg2__btn").forEach((b) => b.addEventListener("click", () => {
     if (looping) return;                   // can't switch mode mid-loop
     loopMode = b.dataset.sl === "loop";
-    try { localStorage.setItem("ds4:loop", loopMode ? "1" : "0"); } catch (e) {}
+    try { localStorage.setItem("ds4x:loop", loopMode ? "1" : "0"); } catch (e) {}
     reflectSL();
   }));
   function stopLoop() { looping = false; if (abortCtrl) abortCtrl.abort(); stopAgent(); }   // stopAgent also unblocks a pending approval, so Stop works mid-prompt
@@ -656,7 +677,7 @@
   }
 
   /* ================= Agent mode (sandboxed file tools) ================= */
-  const AG = window.DS4_AGENT || {};                          // agent tool contract — Agent_Tools/tools.js
+  const AG = window.DS4X_AGENT || {};                          // agent tool contract — Agent_Tools/tools.js
   const AGENT_SYSTEM = AG.SYSTEM || "";
   // The tool catalog is fetched live from the backend registry by AG.load() (called in runAgent), so read
   // it through these helpers — capturing AG.TOOLS at boot would freeze an empty list before load() runs.
@@ -699,7 +720,7 @@
       const r = await fetch(C.agentUrl + "/workspace", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ path }) });
       const d = await r.json();
       if (!r.ok) throw new Error(d.error || "failed");
-      workspace = d.root; agentWs.textContent = d.root; picker.hidden = true; try { localStorage.setItem("ds4:workspace", d.root); } catch (e) {}
+      workspace = d.root; agentWs.textContent = d.root; picker.hidden = true; try { localStorage.setItem("ds4x:workspace", d.root); } catch (e) {}
       agentEmpty.textContent = "Locked to " + d.root + " — ask the agent to read or edit files here.";
       updateView(); refreshTree();
       if (typeof AG.load === "function") AG.load(C.agentUrl, true).catch(() => {});   // new project -> refresh tool contract (run_command's .ds4 commands)
@@ -718,7 +739,7 @@
     try { d = await (await fetch(C.agentUrl + "/healthz")).json(); }
     catch (e) { agentWs.textContent = "agent-tools offline (:8082)"; return; }
     if (d && d.workspace) return adoptWs(d.workspace);          // backend already locked (e.g. --workspace)
-    let saved = null; try { saved = localStorage.getItem("ds4:workspace"); } catch (e) {}
+    let saved = null; try { saved = localStorage.getItem("ds4x:workspace"); } catch (e) {}
     if (!saved) return;
     try {
       const r = await fetch(C.agentUrl + "/workspace", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ path: saved }) });
@@ -726,7 +747,7 @@
       if (!r.ok) throw new Error(j.error || "failed");
       adoptWs(j.root);
     } catch (e) {
-      try { localStorage.removeItem("ds4:workspace"); } catch (e2) {}   // folder gone — forget it
+      try { localStorage.removeItem("ds4x:workspace"); } catch (e2) {}   // folder gone — forget it
       toast("Previously-locked folder is unavailable — choose a new one.");
     }
   }
@@ -766,7 +787,7 @@
   const amToggle = $("agentModeToggle");
   amToggle.querySelectorAll(".seg2__btn").forEach((b) => b.addEventListener("click", () => {
     agentMode = b.dataset.am;
-    try { localStorage.setItem("ds4:agentMode", agentMode); } catch (e) {}
+    try { localStorage.setItem("ds4x:agentMode", agentMode); } catch (e) {}
     amToggle.classList.toggle("is-auto", agentMode === "auto");
     amToggle.querySelectorAll(".seg2__btn").forEach((x) => x.classList.toggle("is-active", x.dataset.am === agentMode));
   }));
@@ -1234,10 +1255,11 @@
     sctx.beginPath(); sctx.moveTo(x(0), h - pad);
     hist.forEach((v, i) => sctx.lineTo(x(i), y(v)));
     sctx.lineTo(x(N - 1), h - pad); sctx.closePath();
-    const g = sctx.createLinearGradient(0, 0, 0, h); g.addColorStop(0, "rgba(124,140,255,0.35)"); g.addColorStop(1, "rgba(124,140,255,0.02)");
+    const p2 = getComputedStyle(document.documentElement).getPropertyValue("--ux-p2").trim() || "#857AF7";   // theme accent — canvas can't read var()
+    const g = sctx.createLinearGradient(0, 0, 0, h); g.addColorStop(0, p2 + "59"); g.addColorStop(1, p2 + "05");
     sctx.fillStyle = g; sctx.fill();
     sctx.beginPath(); hist.forEach((v, i) => (i ? sctx.lineTo(x(i), y(v)) : sctx.moveTo(x(i), y(v))));
-    sctx.strokeStyle = "#8E9CFF"; sctx.lineWidth = 1.5; sctx.lineJoin = "round"; sctx.stroke();
+    sctx.strokeStyle = p2; sctx.lineWidth = 1.5; sctx.lineJoin = "round"; sctx.stroke();
   }
   window.addEventListener("resize", () => { resizeCanvas(); drawSpark(); });
   if (window.ResizeObserver) new ResizeObserver(() => { resizeCanvas(); drawSpark(); }).observe(spark);
@@ -1291,7 +1313,7 @@
   poll(); setInterval(poll, 1000 / (C.pollHz || 2));
 
   /* ---------------- persistence (separate, saved per-mode conversations) ---------------- */
-  const LS = { chat: "ds4:chatMsgs", agent: "ds4:agentMsgs", amode: "ds4:agentMode" };
+  const LS = { chat: "ds4x:chatMsgs", agent: "ds4x:agentMsgs", amode: "ds4x:agentMode" };
   function saveChat() { try { localStorage.setItem(LS.chat, JSON.stringify(messages)); } catch (e) {} }
   function saveAgent() { try { localStorage.setItem(LS.agent, JSON.stringify(agentMsgs)); } catch (e) {} }
 
@@ -1319,7 +1341,7 @@
     }
     return out;
   }
-  function saveLogState() { try { localStorage.setItem("ds4:logState", JSON.stringify(logState)); } catch (e) {} }
+  function saveLogState() { try { localStorage.setItem("ds4x:logState", JSON.stringify(logState)); } catch (e) {} }
   function flushLog(m, beacon) {
     if (!logOn) return;
     const arr = msgsOf(m), st = logState[m];
@@ -1349,7 +1371,7 @@
   let lastStateJson = "";
   function snapshotState() {
     const o = {};
-    for (let i = 0; i < localStorage.length; i++) { const k = localStorage.key(i); if (k && k.indexOf("ds4:") === 0) o[k] = localStorage.getItem(k); }
+    for (let i = 0; i < localStorage.length; i++) { const k = localStorage.key(i); if (k && k.indexOf("ds4x:") === 0) o[k] = localStorage.getItem(k); }
     return o;
   }
   function saveState(beacon) {
@@ -1368,7 +1390,7 @@
       const r = await fetch(C.sidecarUrl + "/state", { signal: c.signal }); clearTimeout(to);
       if (!r.ok) return;
       const o = await r.json();
-      if (o && typeof o === "object") for (const k in o) { if (k.indexOf("ds4:") === 0 && typeof o[k] === "string") { try { localStorage.setItem(k, o[k]); } catch (e) {} } }
+      if (o && typeof o === "object") for (const k in o) { if (k.indexOf("ds4x:") === 0 && typeof o[k] === "string") { try { localStorage.setItem(k, o[k]); } catch (e) {} } }
     } catch (e) {}
   }
 
@@ -1404,17 +1426,17 @@
   function restoreConversations() {
     try { messages = JSON.parse(localStorage.getItem(LS.chat) || "[]") || []; } catch (e) { messages = []; }
     try { agentMsgs = JSON.parse(localStorage.getItem(LS.agent) || "[]") || []; } catch (e) { agentMsgs = []; }
-    try { const ls = JSON.parse(localStorage.getItem("ds4:logState") || "null"); if (ls && ls.chat && ls.agent) { logState.chat = ls.chat; logState.agent = ls.agent; } } catch (e) {}
+    try { const ls = JSON.parse(localStorage.getItem("ds4x:logState") || "null"); if (ls && ls.chat && ls.agent) { logState.chat = ls.chat; logState.agent = ls.agent; } } catch (e) {}
     agentMode = localStorage.getItem(LS.amode) || "ask";
     amToggle.classList.toggle("is-auto", agentMode === "auto");
     amToggle.querySelectorAll(".seg2__btn").forEach((x) => x.classList.toggle("is-active", x.dataset.am === agentMode));
-    const tv = localStorage.getItem("ds4:thinking");           // AGENT: migrate old boolean "1"/"0" -> "on"/"off"/"auto"
+    const tv = localStorage.getItem("ds4x:thinking");           // AGENT: migrate old boolean "1"/"0" -> "on"/"off"/"auto"
     thinkMode = tv === "1" ? "on" : tv === "0" ? "off" : (tv === "on" || tv === "off" || tv === "auto") ? tv : thinkMode;
-    const cv = localStorage.getItem("ds4:chatThink");          // CHAT: plain on/off toggle
+    const cv = localStorage.getItem("ds4x:chatThink");          // CHAT: plain on/off toggle
     chatThink = (cv === "on" || cv === "off") ? cv : chatThink;
     reflectThink();
-    mode = localStorage.getItem("ds4:mode") || "chat";           // restore Chat/Agent
-    const savedStick = localStorage.getItem("ds4:stick");        // read Follow before render
+    mode = localStorage.getItem("ds4x:mode") || "chat";           // restore Chat/Agent
+    const savedStick = localStorage.getItem("ds4x:stick");        // read Follow before render
     rendering = true; renderChatHistory(); renderAgentHistory(); rendering = false;   // rebuild without firing the Follow auto-toggle
     stick = savedStick !== "0"; reflectStick(); saveStick();     // apply restored Follow
     railResyncs.forEach((f) => f());                             // re-apply sidebar collapse (localStorage may have just been seeded by loadState)
@@ -1427,7 +1449,7 @@
     setInterval(() => saveState(false), 3000);   // mirror UI state to the state file as it changes
   }
   let hasLocal = false;
-  for (let i = 0; i < localStorage.length; i++) { const k = localStorage.key(i); if (k && k.indexOf("ds4:") === 0) { hasLocal = true; break; } }
+  for (let i = 0; i < localStorage.length; i++) { const k = localStorage.key(i); if (k && k.indexOf("ds4x:") === 0) { hasLocal = true; break; } }
   if (hasLocal) boot();                          // persistent browser profile already holds our state → restore immediately (no flash)
   else loadState().then(boot).catch(boot);       // fresh profile / different browser → seed from the state file first
 })();

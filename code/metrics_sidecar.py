@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""DS4 frontend metrics sidecar (Phase 3).
+"""ds4Xtend metrics sidecar (Phase 3).
 
 Serves GPU + RAM + disk + model-residency telemetry as JSON so the browser SPA
 (which can't run nvidia-smi/rocm-smi) can render the right-rail panel. Stdlib only.
@@ -335,7 +335,7 @@ def main():
     ap.add_argument("--model",
                     default=os.environ.get("DS4_MODEL", os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "ds4", "ds4flash.gguf")),
                     help="GGUF for the 'model warm' page-cache gauge (env: DS4_MODEL). "
-                         "Defaults to the sibling ds4 checkout (../../ds4); ds4Service passes --model explicitly.")
+                         "Defaults to the sibling ds4 checkout (../../ds4); ds4Xtend passes --model explicitly.")
     ap.add_argument("--backend", default=os.environ.get("DS4_BACKEND", ""),
                     help="inference backend label to report to the UI (cuda/rocm/cpu)")
     ap.add_argument("--ctx", default=os.environ.get("DS4_CTX", ""),

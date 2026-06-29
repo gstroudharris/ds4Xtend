@@ -1,12 +1,12 @@
-# DS4 Web Frontend
+# ds4Xtend
 
-A COSMIC-styled HTML frontend for **ds4-server** (antirez/ds4 · DwarfStar). Standalone repo —
+A UIXtend-styled HTML frontend for **ds4-server** (antirez/ds4 · DwarfStar). Standalone repo —
 it talks to ds4-server over HTTP, with no source dependency on ds4. See
 [docs/frontend_specs.md](docs/frontend_specs.md) for the full plan.
 
 ## Status: Phases 1–3 complete (live)
 
-- **Phase 1 — shell + theme:** full layout, Pop!_OS COSMIC styling, Chat/Agent toggle (Agent
+- **Phase 1 — shell + theme:** full layout, UIXtend (light-acrylic · dark-glass) styling, Chat/Agent toggle (Agent
   shows a display-only tool-call preview), suggestion cards, composer.
 - **Phase 2 — live chat:** streaming from ds4-server (`/v1/chat/completions` SSE), thinking
   traces, markdown + code blocks with copy, Stop/abort, server-status heartbeat, and the six
@@ -21,16 +21,16 @@ it talks to ds4-server over HTTP, with no source dependency on ds4. See
 **One command** (from the repo root):
 
 ```bash
-./ds4Service      # prompts for the ds4 dir (remembered), launches everything, Ctrl+C stops it all
+./ds4Xtend      # prompts for the ds4 dir (remembered), launches everything, Ctrl+C stops it all
 ```
 
-`ds4Service` starts ds4-server + the metrics sidecar + the web UI, streams their logs, and tears
+`ds4Xtend` starts ds4-server + the metrics sidecar + the web UI, streams their logs, and tears
 everything down by name on Ctrl+C. Then open http://localhost:8090.
 
 **Manual** (three processes) if you prefer:
 
 ```bash
-# 1) ds4-server — in the ds4 checkout (CORS + port 8080). Normally ds4Service does this for you,
+# 1) ds4-server — in the ds4 checkout (CORS + port 8080). Normally ds4Xtend does this for you,
 #    auto-detecting the backend. To run it by hand use YOUR box's flags (see the two example setups
 #    below); the AMD/ROCm full-residency variant is shown here:
 cd ../ds4   # the ds4 checkout (sibling of this repo)
@@ -44,15 +44,15 @@ code/run-frontend.sh
 The "model warm" gauge defaults to the sibling `../ds4/ds4flash.gguf`; override with
 `DS4_MODEL=/path/to/model.gguf`.
 
-**Per-machine launch (optional).** `ds4Service` auto-detects the GPU backend (AMD/ROCm vs
+**Per-machine launch (optional).** `ds4Xtend` auto-detects the GPU backend (AMD/ROCm vs
 NVIDIA/CUDA), so it works on either box with no config. To pin custom flags per machine, drop an
-executable `ds4-server.sh` in the ds4 dir (forwarding `"$@"`) — `ds4Service` runs it instead,
-appending only `--cors --port`; the script owns backend/env/model/ctx. See the `ds4Service` header
+executable `ds4-server.sh` in the ds4 dir (forwarding `"$@"`) — `ds4Xtend` runs it instead,
+appending only `--cors --port`; the script owns backend/env/model/ctx. See the `ds4Xtend` header
 for the precedence ladder and the `DS4_SERVER_SCRIPT` / `DS4_NO_SERVER_SCRIPT` knobs.
 
 **Two example `ds4-server.sh` setups.** Pick the one matching your hardware, save it as
-`ds4-server.sh` in your ds4 dir, `chmod +x` it, then launch that box with `./ds4Service`. Both `cd`
-to the script's own dir and forward `"$@"`, so they work whether `ds4Service` runs them or you run
+`ds4-server.sh` in your ds4 dir, `chmod +x` it, then launch that box with `./ds4Xtend`. Both `cd`
+to the script's own dir and forward `"$@"`, so they work whether `ds4Xtend` runs them or you run
 them by hand.
 
 *AMD APU / iGPU — full residency (fastest when the whole model fits in unified memory).* An APU like
@@ -78,7 +78,7 @@ exec env DS4_CUDA_NO_DIRECT_IO=1 DS4_CUDA_KEEP_MODEL_PAGES=1 LD_LIBRARY_PATH=/us
   ./ds4-server --cuda --ssd-streaming --ctx 100000 "$@"
 ```
 
-On either box, launch the whole stack with `./ds4Service`, then open http://localhost:8090.
+On either box, launch the whole stack with `./ds4Xtend`, then open http://localhost:8090.
 
 **Setting up a second machine (known gaps).** Per-box config is machine-local and never committed —
 do it once per box: the ds4 dir is remembered under `~/.config/ds4service/`, and any `ds4-server.sh`
@@ -100,7 +100,7 @@ diverges your clone from upstream). Ignore them locally instead, in **`ds4/.git/
 ```
 
 ## Layout / what each file does
-- `ds4Service` — one-command launcher for the whole stack (repo root)
+- `ds4Xtend` — one-command launcher for the whole stack (repo root)
 - `code/index.html` · `styles.css` · `app.js` — the SPA (markup / COSMIC theme / chat + telemetry)
 - `code/config.js` — server & sidecar URLs, suggestion cards
 - `code/Agent_Tools/` — Agent-mode file tools: `tools.js` (the model-facing tool contract + system prompt, consumed by app.js), `agent_tools.py` (the sandboxed executor on :8082), `TOOL_TEMPLATE.md` (how to add a tool + best practices)

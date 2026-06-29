@@ -47,7 +47,7 @@ WHY THE NUMBERS ARE NOISY (read before trusting any single run)
   that box — the CUDA result doesn't transfer.
 
 USAGE
-  # 1) get a ds4-server listening on :8080  (./ds4Service, or ds4's run.sh-style launch)
+  # 1) get a ds4-server listening on :8080  (./ds4Xtend, or ds4's run.sh-style launch)
   # 2) python3 code/bench_thinking.py [--repeats 3] [--max-tokens 300] [--no-warmup]
 """
 import argparse, json, statistics, time, urllib.request

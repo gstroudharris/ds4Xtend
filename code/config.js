@@ -1,7 +1,7 @@
-// DS4 frontend configuration.
+// ds4Xtend frontend configuration.
 // Plain global (no ES module) so the app also works opened directly as file://.
 // Phase 2+ reads these for live wiring; Phase 1 uses `demo` for static styling.
-window.DS4_CONFIG = {
+window.DS4X_CONFIG = {
   serverUrl:  "http://localhost:8080",   // ds4-server — launch with: --cors --port 8080
   sidecarUrl: "http://localhost:8081",   // metrics sidecar (added in Phase 3)
   agentUrl:   "http://localhost:8082",   // sandboxed agent file-tools (Agent mode)

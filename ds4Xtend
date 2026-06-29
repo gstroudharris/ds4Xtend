@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# ds4Service — one-command launcher for the whole DS4 stack:
+# ds4Xtend — one-command launcher for the whole DS4 stack:
 #   ds4-server (inference, :8080)  +  metrics sidecar (:8081)  +  ds4Frontend web UI (:8090)
 #
 # What it does:
@@ -18,11 +18,11 @@
 #   (/dev/kfd + ROCm) -> rocm, else a responding nvidia-smi -> cuda, else cpu. (E.g. an AMD Radeon
 #   780M / gfx1103 box resolves to rocm + HSA_OVERRIDE_GFX_VERSION=11.0.0 + full residency.)
 #   Override per box:  --ds4-flags "--rocm --ssd-streaming"   (also DS4_SERVER_FLAGS / DS4_BACKEND /
-#   DS4_SERVER_ENV / DS4_LD_PATH, or a sourced ~/.config/ds4service/profile). Env is inherited, e.g.
-#   HSA_OVERRIDE_GFX_VERSION=11.0.0 ./ds4Service   (--cors/--port always added by us; --ctx too, unless
+#   DS4_SERVER_ENV / DS4_LD_PATH, or a sourced ~/.config/ds4xtend/profile). Env is inherited, e.g.
+#   HSA_OVERRIDE_GFX_VERSION=11.0.0 ./ds4Xtend   (--cors/--port always added by us; --ctx too, unless
 #   a launch script owns it — see next).
 # Per-machine launch script (optional, like ds4/run.sh): if $DS4_DIR/ds4-server.sh is executable AND
-#   you pass no explicit flags, ds4Service runs it instead of composing ./ds4-server — the script owns
+#   you pass no explicit flags, ds4Xtend runs it instead of composing ./ds4-server — the script owns
 #   backend/env/model/ctx (ideal for per-box memory limits) and we append only --cors --port. Set the
 #   path via DS4_SERVER_SCRIPT (abs or rel to the ds4 dir); force the built-in with DS4_NO_SERVER_SCRIPT=1.
 #   Precedence: --ds4-flags > DS4_SERVER_FLAGS > ds4-server.sh > auto-detect. The script must forward
@@ -35,12 +35,16 @@ set -uo pipefail
 
 # ---------- locations ----------
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-FRONTEND_DIR="$SCRIPT_DIR"                       # repo root (holds ds4Service, docs/, code/)
+SELF="$(basename -- "${BASH_SOURCE[0]}")"        # our own name, so banners/messages survive a rename
+FRONTEND_DIR="$SCRIPT_DIR"                       # repo root (holds ds4Xtend, docs/, code/)
 CODE_DIR="$FRONTEND_DIR/code"                    # web assets + sidecar live here
 SIDECAR="$CODE_DIR/metrics_sidecar.py"
-CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/ds4service"
+CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/ds4xtend"
 CONFIG_FILE="$CONFIG_DIR/dir"
-RUN_DIR="$(mktemp -d "${TMPDIR:-/tmp}/ds4service.XXXXXX")"
+# migrate the saved ds4-install path from the pre-rename config dir so you don't have to re-run --setup
+OLD_CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/ds4service"
+[ ! -f "$CONFIG_FILE" ] && [ -f "$OLD_CONFIG_DIR/dir" ] && { mkdir -p "$CONFIG_DIR" && cp "$OLD_CONFIG_DIR/dir" "$CONFIG_FILE" 2>/dev/null; }
+RUN_DIR="$(mktemp -d "${TMPDIR:-/tmp}/ds4xtend.XXXXXX")"
 
 SERVER_PORT="${DS4_SERVER_PORT:-8080}"
 SIDE_PORT="${DS4_SIDE_PORT:-8081}"
@@ -65,7 +69,7 @@ TAIL_PID=""
 cleanup() {
   trap '' INT TERM                      # ignore repeat Ctrl+C during shutdown
   [ -n "$TAIL_PID" ] && kill "$TAIL_PID" 2>/dev/null
-  printf '\n%sCtrl+C — shutting down ds4Service. Stopping services:%s\n' "$B$YEL" "$RST"
+  printf '\n%sCtrl+C — shutting down %s. Stopping services:%s\n' "$B$YEL" "$SELF" "$RST"
   local i name pid
   for ((i=${#SVC_PIDS[@]}-1; i>=0; i--)); do      # reverse order (frontend → server)
     name="${SVC_NAMES[$i]}"; pid="${SVC_PIDS[$i]}"
@@ -127,7 +131,7 @@ preflight_ports() {  # args: "port:label" ...
   if [ "$foreign" = 1 ]; then
     errln "one is an unrelated/hidden process — close it yourself, or change ports (DS4_*_PORT)"; return 1
   fi
-  if [ ! -t 0 ]; then errln "re-run ds4Service in an interactive terminal to be offered to close them"; return 1; fi
+  if [ ! -t 0 ]; then errln "re-run $SELF in an interactive terminal to be offered to close them"; return 1; fi
   read -r -p "    Close ${#bp_pids[@]} running ds4 process(es) and continue? [Y/n]: " ans || ans="n"
   case "${ans:-Y}" in [Nn]*) errln "left them running — cannot continue"; return 1 ;; esac
   for pid in "${bp_pids[@]}"; do kill "$pid" 2>/dev/null; done       # graceful — ds4-server drains on SIGTERM
@@ -205,7 +209,7 @@ verify_dir() {  # candidate -> sets DS4_DIR, MODEL
 }
 
 # ======================================================================
-printf '%s%sds4Service%s  —  DS4 inference + web UI launcher\n\n' "$B" "$CYN" "$RST"
+printf '%s%s%s%s  —  DS4 inference + web UI launcher\n\n' "$B" "$CYN" "$SELF" "$RST"
 
 # ---------- 1. ds4 install directory ----------
 say "1. ds4 install directory"
@@ -250,7 +254,7 @@ fi
 
 # ---------- 2. metrics sidecar ----------
 say "2. metrics sidecar"
-[ -f "$SIDECAR" ] || { errln "metrics_sidecar.py not found beside ds4Service ($SIDECAR)"; exit 1; }
+[ -f "$SIDECAR" ] || { errln "metrics_sidecar.py not found beside $SELF ($SIDECAR)"; exit 1; }
 chmod +x "$SIDECAR" 2>/dev/null || true
 ok "ready: $SIDECAR"
 
@@ -391,7 +395,7 @@ if [ -f "$AGENT_REQ" ]; then
       printf '      %sInstall it once (asks for your password), then re-run as your normal user — do NOT use sudo:%s\n' "$DIM" "$RST"
       printf '\n'
       printf '          sudo apt install -y python%s-venv\n' "${PYVER:-3}"
-      printf '          cd "%s" && ./ds4Service\n' "$FRONTEND_DIR"
+      printf '          cd "%s" && ./%s\n' "$FRONTEND_DIR" "$SELF"
       printf '\n'
       printf '      %sOnly the apt step needs sudo; file/exec tools keep working meanwhile.%s\n' "$DIM" "$RST"
     else
@@ -412,7 +416,7 @@ if [ -f "$AGENT_REQ" ]; then
         ok "web-tool deps ready (web_search + web_scrape)"
       else
         warn "web-tool dep install failed — web tools unavailable until it succeeds; see $AGENT_SETUP_LOG (last line: $(tail -n1 "$AGENT_SETUP_LOG" 2>/dev/null))"
-        printf '      %sfix connectivity, then re-run:   cd "%s" && ./ds4Service%s\n' "$DIM" "$FRONTEND_DIR" "$RST"
+        printf '      %sfix connectivity, then re-run:   cd "%s" && ./%s%s\n' "$DIM" "$FRONTEND_DIR" "$SELF" "$RST"
       fi
     fi
   fi

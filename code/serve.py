@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Static file server for the DS4 dashboard. Identical to `python3 -m http.server`
+"""Static file server for the ds4Xtend dashboard. Identical to `python3 -m http.server`
 but silently tolerates client disconnects (no Broken pipe tracebacks)."""
 import argparse, functools
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer

@@ -1,15 +1,15 @@
-// DS4 agent tool CONTRACT — the agent system prompt + a thin loader that fetches the model-facing tool
+// ds4Xtend agent tool CONTRACT — the agent system prompt + a thin loader that fetches the model-facing tool
 // catalog from the backend registry at runtime. Kept here (out of app.js) for clarity. Loaded before app.js.
-//   app.js consumes   window.DS4_AGENT   (calls .load(agentUrl) once, then reads .TOOLS/.ENDPOINTS/.MUTATING)
+//   app.js consumes   window.DS4X_AGENT   (calls .load(agentUrl) once, then reads .TOOLS/.ENDPOINTS/.MUTATING)
 //   the backend that REGISTERS + EXECUTES the tools is   ./agent_tools.py   (sandboxed file I/O on :8082)
 //   each tool is a folder (spec.json + tool.py); the backend auto-discovers them and serves the catalog at
 //   GET /tools, so adding a tool needs NO change here — to add one, follow   ./TOOL_TEMPLATE.md
-window.DS4_AGENT = {
+window.DS4X_AGENT = {
 
   // Prepended as the system message on every agent turn. It states the PROCEDURE + environment quirks
   // (not the tool catalog — the tools describe themselves). Keep it short: it is prefilled every turn.
   SYSTEM:
-    "You are DS4, a coding agent working inside one locked project folder. Use the provided tools to " +
+    "You are ds4Xtend, a coding agent working inside one locked project folder. Use the provided tools to " +
     "inspect and modify files. All paths are relative to the workspace root (use '.' for the root); you " +
     "cannot access anything outside it. Prefer edit_file for small changes; read or search before editing, " +
     "and give edit_file a 'find' that matches exactly one place (include surrounding lines) or set replace_all. " +
