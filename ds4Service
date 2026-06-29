@@ -377,13 +377,30 @@ AGENT_VENV="$CODE_DIR/Agent_Tools/.venv"
 AGENT_REQ="$CODE_DIR/Agent_Tools/requirements.txt"
 AGENT_SETUP_LOG="$RUN_DIR/agent-venv-setup.log"
 AGENT_PY="$AGENT_VENV/bin/python"
+# A venv is only usable if its python can import pip. A pip-less venv — what `python3 -m venv` leaves behind when
+# ensurepip / the python3-venv apt package is missing — still has an executable bin/python, so an -x test alone is
+# not enough: the old code only recreated on a *missing* python, so such a venv stayed broken forever and pip
+# install failed every run with a misleading "(offline?)". Gate on "can this python actually run pip" instead.
+venv_has_pip() { [ -x "$AGENT_PY" ] && "$AGENT_PY" -m pip --version >/dev/null 2>&1; }
 if [ -f "$AGENT_REQ" ]; then
-  if [ ! -x "$AGENT_PY" ]; then
-    say "First run: creating the web-tool venv (ddgs + trafilatura)…"
-    python3 -m venv --system-site-packages "$AGENT_VENV" > "$AGENT_SETUP_LOG" 2>&1 \
-      || warn "couldn't create the web-tool venv (is python3-venv installed?) — see $AGENT_SETUP_LOG"
+  if ! venv_has_pip; then
+    [ -e "$AGENT_VENV" ] && rm -rf "$AGENT_VENV"   # drop a stale/pip-less venv so `venv` can repopulate it cleanly
+    if ! python3 -c 'import ensurepip' 2>/dev/null; then
+      PYVER="$(python3 -c 'import sys; print("%d.%d" % sys.version_info[:2])' 2>/dev/null)"
+      warn "web tools (web_search/web_scrape) need pip inside a venv, but Python's ensurepip is missing."
+      printf '      %sInstall it once (asks for your password), then re-run as your normal user — do NOT use sudo:%s\n' "$DIM" "$RST"
+      printf '\n'
+      printf '          sudo apt install -y python%s-venv\n' "${PYVER:-3}"
+      printf '          cd "%s" && ./ds4Service\n' "$FRONTEND_DIR"
+      printf '\n'
+      printf '      %sOnly the apt step needs sudo; file/exec tools keep working meanwhile.%s\n' "$DIM" "$RST"
+    else
+      say "First run: creating the web-tool venv (ddgs + trafilatura)…"
+      python3 -m venv --system-site-packages "$AGENT_VENV" > "$AGENT_SETUP_LOG" 2>&1 \
+        || warn "couldn't create the web-tool venv — see $AGENT_SETUP_LOG"
+    fi
   fi
-  if [ -x "$AGENT_PY" ]; then
+  if venv_has_pip; then
     # (Re)install when the venv is fresh / requirements.txt changed (content hash) OR the deps don't import.
     AGENT_REQ_HASH="$(sha256sum "$AGENT_REQ" 2>/dev/null | cut -d' ' -f1)"
     if [ "$(cat "$AGENT_VENV/.req-hash" 2>/dev/null)" != "$AGENT_REQ_HASH" ] \
@@ -394,7 +411,8 @@ if [ -f "$AGENT_REQ" ]; then
         printf '%s\n' "$AGENT_REQ_HASH" > "$AGENT_VENV/.req-hash"   # remember what we installed -> skip next time
         ok "web-tool deps ready (web_search + web_scrape)"
       else
-        warn "web-tool dep install failed (offline?) — web tools unavailable until it succeeds; see $AGENT_SETUP_LOG"
+        warn "web-tool dep install failed — web tools unavailable until it succeeds; see $AGENT_SETUP_LOG (last line: $(tail -n1 "$AGENT_SETUP_LOG" 2>/dev/null))"
+        printf '      %sfix connectivity, then re-run:   cd "%s" && ./ds4Service%s\n' "$DIM" "$FRONTEND_DIR" "$RST"
       fi
     fi
   fi
