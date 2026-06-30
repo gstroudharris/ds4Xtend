@@ -79,6 +79,27 @@ neither vendored into this repo nor redistributed with it, so their permissive
 licenses raise no conflict. ds4-server runs as its own process and ds4Xtend only
 talks to it over HTTP — there is no source dependency in either direction.
 
+### Transitive dependencies
+
+The full tree pulled in by `ddgs` and `trafilatura` was audited and is GPLv3-compatible:
+`lxml` (BSD), `courlan` / `htmldate` / `fake-useragent` (Apache-2.0), `certifi` (MPL-2.0),
+`primp` / `socksio` / `charset-normalizer` / `h11` / `anyio` (MIT), `httpx` / `httpcore` (BSD),
+`dateparser` (BSD), `regex` (Apache-2.0 AND CNRI-Python), and the rest are permissive.
+
+One package needs a license **choice**: **`tld`** (transitive via `trafilatura → courlan → tld`)
+is tri-licensed `MPL-1.1 OR GPL-2.0-only OR LGPL-2.1-or-later`. The `OR` is the licensee's choice,
+so ds4Xtend takes it under the **LGPL-2.1-or-later** arm — which is GPLv3-compatible — not the
+`GPL-2.0-only` arm. (It's a runtime dependency this repo never redistributes, so nothing about it
+attaches to the repo's own license either way.)
+
+**Scope of the audit.** Only `ddgs`, `trafilatura`, and their transitive deps are project
+dependencies. The venv is built with `--system-site-packages`, so enumerating *every* package the
+venv can import also surfaces the host's Ubuntu Python packages (e.g. `pycairo`, `ufw`, `repoman`) —
+those belong to the operating system, not to ds4Xtend, and are outside this project's licensing
+surface. To reproduce the audit, inspect only the distributions physically installed under
+`code/Agent_Tools/.venv/lib/python3.12/site-packages/*.dist-info` (their `License-Expression` /
+`License ::` classifier fields).
+
 ## Reusing this code
 
 You may copy, modify, and redistribute ds4Xtend under GPLv3-or-later. If you
