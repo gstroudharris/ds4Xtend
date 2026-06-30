@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Grant Harris
 """Tool-use eval — does the MODEL know WHEN to use a tool and HOW (right tool, right args)?
 
 This is fundamentally different from test_tools.py / test_jobs.py. Those test the PLUMBING (when the model

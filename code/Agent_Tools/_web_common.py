@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Grant Harris
 """_web_common — shared helpers for the web_search / web_scrape tools.
 
 NOT a registry tool (no spec.json beside it, so agent_tools.py's loader ignores it). The two web tools import it.

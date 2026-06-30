@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Grant Harris
 """Static file server for the ds4Xtend dashboard. Identical to `python3 -m http.server`
 but silently tolerates client disconnects (no Broken pipe tracebacks)."""
 import argparse, functools

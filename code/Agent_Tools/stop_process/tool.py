@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Grant Harris
 """stop_process — terminate a background process by job_id (group-kill: SIGTERM -> grace -> SIGKILL)."""
 
 

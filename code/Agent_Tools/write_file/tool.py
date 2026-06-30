@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Grant Harris
 """write_file — create or overwrite a file with its full contents (within the workspace)."""
 import os
 

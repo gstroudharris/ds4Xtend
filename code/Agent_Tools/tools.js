@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Grant Harris
 // ds4Xtend agent tool CONTRACT — the agent system prompt + a thin loader that fetches the model-facing tool
 // catalog from the backend registry at runtime. Kept here (out of app.js) for clarity. Loaded before app.js.
 //   app.js consumes   window.DS4X_AGENT   (calls .load(agentUrl) once, then reads .TOOLS/.ENDPOINTS/.MUTATING)

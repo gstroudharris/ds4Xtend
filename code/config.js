@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Grant Harris
 // ds4Xtend frontend configuration.
 // Plain global (no ES module) so the app also works opened directly as file://.
 // Phase 2+ reads these for live wiring; Phase 1 uses `demo` for static styling.

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Grant Harris
 """read_file — return a text file's contents (optionally a 0-based line range)."""
 import os
 

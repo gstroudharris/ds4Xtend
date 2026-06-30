@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Grant Harris
 # ds4Xtend — one-command launcher for the whole DS4 stack:
 #   ds4-server (inference, :8080)  +  metrics sidecar (:8081)  +  web UI (:8090)
 #

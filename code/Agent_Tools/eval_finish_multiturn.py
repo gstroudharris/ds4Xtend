@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Grant Harris
 """Multi-turn finish_run eval — resolves what single-shot eval_tooluse.py cannot.
 
 Single-shot, the model preferred a verify-first move (list_dir) over finish_run when the work was already done,

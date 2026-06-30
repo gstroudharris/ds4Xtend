@@ -83,6 +83,8 @@ deliberately *not* a tool folder, so the model can't call it — only the file-t
 
 **`rename/tool.py`**
 ```python
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Grant Harris
 """rename — move a file within the workspace."""
 import os
 

@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Grant Harris
 # Launch the ds4Xtend frontend: metrics sidecar (:8081) + static server (:8090).
 # ds4-server must be started SEPARATELY (it needs the GPU + model). See below.
 set -euo pipefail

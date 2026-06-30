@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Grant Harris
 """Edge-case + safety tests for the ds4 agent tool registry.
 
 Run:  python3 test_tools.py            (verbose: add -v)

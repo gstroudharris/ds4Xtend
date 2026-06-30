@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Grant Harris
 """web_scrape — fetch one URL -> clean main-content markdown (+ metadata), SSRF-guarded and token-capped.
 
 Lean by design: an impersonating HTTP fetch (primp — no browser) + trafilatura extraction + an optional BM25

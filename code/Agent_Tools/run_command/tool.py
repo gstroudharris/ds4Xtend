@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Grant Harris
 """run_command — run a PRE-VETTED named command from the project's .ds4/commands.json.
 
 A human authored the manifest, and the model only chooses a name (it cannot pass arguments), so a declared

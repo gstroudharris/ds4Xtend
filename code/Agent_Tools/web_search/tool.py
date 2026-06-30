@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Grant Harris
 """web_search — ranked web results (title, url, snippet) via the self-hosted ddgs metasearch library (no API key).
 
 Returns only URLs + snippets; it never fetches page bodies (that's web_scrape's job — the two tools stay decoupled,

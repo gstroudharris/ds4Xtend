@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Grant Harris
 """ds4Xtend metrics sidecar (Phase 3).
 
 Serves GPU + RAM + disk + model-residency telemetry as JSON so the browser SPA

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Grant Harris
 """execute — run an arbitrary command in the workspace (HIGH-RISK; gated by human approval in Ask mode).
 
 Hybrid input: an `argv` array runs with NO shell (no injection surface); `shell:true` + `command` runs via

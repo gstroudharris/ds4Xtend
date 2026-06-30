@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Grant Harris
 """Background-process manager for the execute tool — handles, goals, leases, and GUARANTEED cleanup.
 
 The execute tool can launch a long-lived process (a dev server, a watcher, a long task). The agent gets a

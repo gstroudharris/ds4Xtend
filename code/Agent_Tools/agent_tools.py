@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Grant Harris
 """ds4 agent tools — sandboxed filesystem executor for the dashboard's Agent mode.
 
 The browser can't touch the filesystem, so the web agent loop calls THIS localhost-only

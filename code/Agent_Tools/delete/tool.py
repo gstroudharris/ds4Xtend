@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Grant Harris
 """delete — remove a file, or an EMPTY directory (no recursive delete)."""
 import errno
 import os

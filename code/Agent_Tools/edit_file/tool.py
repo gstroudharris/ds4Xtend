@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Grant Harris
 """edit_file — unique-match find/replace (set replace_all to change every occurrence)."""
 import os
 

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Grant Harris
 """process_output — read a background process's output + status by job_id (renews its lease)."""
 
 

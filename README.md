@@ -81,7 +81,7 @@ exec env DS4_CUDA_NO_DIRECT_IO=1 DS4_CUDA_KEEP_MODEL_PAGES=1 LD_LIBRARY_PATH=/us
 On either box, launch the whole stack with `./ds4Xtend`, then open http://localhost:8090.
 
 **Setting up a second machine (known gaps).** Per-box config is machine-local and never committed —
-do it once per box: the ds4 dir is remembered under `~/.config/ds4service/`, and any `ds4-server.sh`
+do it once per box: the ds4 dir is remembered under `~/.config/ds4xtend/`, and any `ds4-server.sh`
 lives in (and is ignored from) your ds4 checkout. Auto-detect sniffs the *GPU*, not its *libraries* or
 *build*, so if ds4-server won't start: point `DS4_LD_PATH` at your CUDA/ROCm libs (defaults
 `/usr/local/cuda/lib64` and `/opt/rocm/lib`), and make sure ds4-server was built for that backend
@@ -108,3 +108,24 @@ diverges your clone from upstream). Ignore them locally instead, in **`ds4/.git/
 - `code/run-frontend.sh` — sidecar + static server (not ds4-server)
 - `code/bench_thinking.py` — measures whether "Auto" thinking-mode saves time on this box (think on/off savings + the cost of switching); run against a live ds4-server, esp. on the slow box
 - `docs/frontend_specs.md` — full specification & roadmap
+- `docs/LICENSING.md` — licensing guide: what GPLv3 means here, third-party components, and the SPDX header convention for new files
+
+## License
+
+Copyright (C) 2026 Grant Harris
+
+This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later version.
+
+This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the [LICENSE](LICENSE) file for details.
+
+Every source file carries an SPDX header (`SPDX-License-Identifier: GPL-3.0-or-later`); see [docs/LICENSING.md](docs/LICENSING.md) for the licensing guide and the header convention for new files.
+
+## Attribution
+
+The visual theme — blue/white palette, square radii, acrylic/glass surfaces, and the bold "X" logo treatment — is adapted from [UIXtend](https://github.com/gstroudharris/UIXtend) © Grant Harris, GPLv3.
+
+Web tools build on [ddgs](https://github.com/deedy5/ddgs) (MIT) for keyless web search and [trafilatura](https://github.com/adbar/trafilatura) (Apache-2.0) for HTML→text extraction. Both are GPLv3-compatible and installed at runtime into a local venv — not bundled or redistributed here.
+
+Talks to **ds4-server** ([antirez/ds4](https://github.com/antirez/ds4) · DeepSeek V4 Flash inference) over HTTP — a separate component, not bundled.
+
+Vibe coding assistance from [Claude](https://claude.ai) by Anthropic.

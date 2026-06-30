@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Grant Harris
 /* ============================================================
    ds4Xtend — app logic
    Phase 1: shell/theme · 2: chat streaming · 3: telemetry · 4: agent (sandboxed file tools)

@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Grant Harris
 """Tests for the background-process JobManager (_jobs.py) — every cleanup layer must actually reap.
 
 Run:  python3 test_jobs.py        (these spawn real short-lived processes; ~10s)
