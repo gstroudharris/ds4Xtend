@@ -1,20 +1,63 @@
 # ds4Xtend
 
 A UIXtend-styled HTML frontend for **ds4-server** (antirez/ds4 · DwarfStar). Standalone repo —
-it talks to ds4-server over HTTP, with no source dependency on ds4. See
-[docs/frontend_specs.md](docs/frontend_specs.md) for the full plan.
+it talks to ds4-server over HTTP, with no source dependency on ds4.
 
-## Status: Phases 1–3 complete (live)
+## Features
 
-- **Phase 1 — shell + theme:** full layout, UIXtend (light-acrylic · dark-glass) styling, Chat/Agent toggle (Agent
-  shows a display-only tool-call preview), suggestion cards, composer.
-- **Phase 2 — live chat:** streaming from ds4-server (`/v1/chat/completions` SSE), thinking
-  traces, markdown + code blocks with copy, Stop/abort, server-status heartbeat, and the six
-  per-turn metrics (TTFT / total / prefill / decode / prompt / output) computed from the stream.
-- **Phase 3 — live telemetry:** `metrics_sidecar.py` serves real GPU (rocm-smi / nvidia-smi), RAM, disk-rate,
-  and **model page-cache residency (mincore)** as JSON; the right rail polls it at 2 Hz.
+**Chat**
+- Live **streaming** from ds4-server (`/v1/chat/completions`, SSE), with inline **thinking traces** above each reply
+- **Markdown + code blocks** with one-click copy
+- **Thinking switch — on / off / auto:** the "auto" heuristic skips thinking on trivial turns and thinks on hard
+  ones (the headline feature); a per-turn difficulty log seeds future tuning
+- **Six per-turn metrics** computed from the stream: TTFT, total, prefill, decode, prompt tokens, output tokens
+- **Stop/abort** mid-stream, and **Send vs Loop** (re-run a prompt until you press Stop)
+- **Automatic context-window management:** trims long conversations to fit `--ctx` before sending, learns the
+  server's real tokenizer live, and auto-retries harder if the server still 400s; a context meter shows tokens left
+- **Transient-error resilience:** retries 5xx / 429 / ROCm hiccups with abort-aware backoff instead of killing the run
+- Server-status heartbeat, stick-to-bottom toggle, and quick-start suggestion cards
+- **Light / dark theme** (UIXtend light-acrylic · dark-glass), remembered across sessions
+- Conversation **logging** to `logs/` with an in-memory history cap
 
-**Remaining (P2 stretch):** Agent-mode tool *execution*, endpoint switcher, light theme.
+**Agent mode (sandboxed)**
+- Turn any chat into an **agent loop** with a **workspace folder** you pick and lock (file-tree browser in the left rail)
+- **Ask vs Auto:** Ask shows a diff and waits before each write; Auto applies writes immediately — always inside the locked folder
+- **14 sandboxed tools** served by `agent_tools.py` (bound to `127.0.0.1`): `read_file`, `write_file`, `edit_file`,
+  `delete`, `list_dir`, `mkdir`, `search`, `run_command`, `execute`, `list_processes`, `process_output`,
+  `stop_process`, `web_search`, `web_scrape`
+- **Keyless web search** (ddgs) and **clean HTML→markdown scraping** (trafilatura, SSRF-guarded)
+- Project commands from `.ds4/commands.json` surfaced to the model; tool-output sizes auto-scaled to your hardware
+- Context force-clear on long agent loops to avoid prefill thrash on slow boxes
+
+**Live telemetry** (right rail, 2 Hz · `metrics_sidecar.py`)
+- Real **GPU** stats via rocm-smi / nvidia-smi: utilization, peak, temp, power draw/limit, clock, VRAM
+- **System RAM** and disk I/O rate
+- **Model page-cache residency** ("model warm", via `mincore`) — how much of the model is hot in RAM
+- Live backend readout: backend, context size, streaming / expert-cache mode
+
+**Launcher & tooling**
+- **One-command `ds4Xtend`** launcher: starts ds4-server + sidecar + UI, streams their logs, tears it all down on Ctrl+C
+- **Auto-detects** AMD/ROCm vs NVIDIA/CUDA; optional per-box `ds4-server.sh` hook for custom flags
+- `bench_thinking.py` — measures whether "auto" thinking actually saves time on your box
+
+> **Not yet:** switching the ds4-server endpoint from the UI — set `serverUrl` in `code/config.js` for now.
+
+## Prerequisites — set up ds4 first
+
+ds4Xtend is **only a frontend**: it does not bundle, build, or download the model. It talks to a running
+**ds4-server** over HTTP, so you must set up [antirez/ds4](https://github.com/antirez/ds4) **before** using ds4Xtend.
+
+1. **Clone ds4.** The launcher asks for its path the first time and remembers it (under `~/.config/ds4xtend/`);
+   a sibling `../ds4` is the default the manual commands below assume.
+   ```bash
+   git clone https://github.com/antirez/ds4   # e.g. next to this repo
+   ```
+2. **Build it for your GPU backend** (see ds4's own README): `make rocm` (AMD) or `make cuda-generic` (NVIDIA).
+3. **Download the model** ds4 runs (e.g. `ds4flash.gguf`) into the ds4 dir, per ds4's instructions.
+
+You also need **Python 3** (for the sidecar, static server, and Agent-mode tools) and a **Linux / POSIX** shell —
+the launcher is a bash script and telemetry reads `rocm-smi` / `nvidia-smi`. Agent-mode web tools install into a
+local venv on first use. ds4Xtend launches and auto-detects ds4-server for you; you only set ds4 up once.
 
 ## Run
 
@@ -107,7 +150,6 @@ diverges your clone from upstream). Ignore them locally instead, in **`ds4/.git/
 - `code/metrics_sidecar.py` — GPU/RAM/disk/model-residency JSON on :8081
 - `code/run-frontend.sh` — sidecar + static server (not ds4-server)
 - `code/bench_thinking.py` — measures whether "Auto" thinking-mode saves time on this box (think on/off savings + the cost of switching); run against a live ds4-server, esp. on the slow box
-- `docs/frontend_specs.md` — full specification & roadmap
 - `docs/LICENSING.md` — licensing guide: what GPLv3 means here, third-party components, and the SPDX header convention for new files
 
 ## License
@@ -127,5 +169,7 @@ The visual theme — blue/white palette, square radii, acrylic/glass surfaces, a
 Web tools build on [ddgs](https://github.com/deedy5/ddgs) (MIT) for keyless web search and [trafilatura](https://github.com/adbar/trafilatura) (Apache-2.0) for HTML→text extraction. Both are GPLv3-compatible and installed at runtime into a local venv — not bundled or redistributed here.
 
 Talks to **ds4-server** ([antirez/ds4](https://github.com/antirez/ds4) · DeepSeek V4 Flash inference) over HTTP — a separate component, not bundled.
+
+Project and dashboard inspiration from **Prompt Engineering** and his [YouTube video](https://www.youtube.com/watch?v=9gHcmhUDJfw) — thank you.
 
 Vibe coding assistance from [Claude](https://claude.ai) by Anthropic.

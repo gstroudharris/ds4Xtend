@@ -65,13 +65,6 @@
     themeBtn.addEventListener("click", () =>
       applyTheme(document.documentElement.getAttribute("data-theme") === "light" ? "dark" : "light"));
   }
-  try {
-    matchMedia("(prefers-color-scheme: light)").addEventListener("change", (e) => {
-      let saved = null; try { saved = localStorage.getItem("ds4x:theme"); } catch (_) {}
-      if (!saved) applyTheme(e.matches ? "light" : "dark");
-    });
-  } catch (e) {}
-
   function updateView() {
     const agent = mode === "agent";
     toggle.classList.toggle("is-agent", agent);

@@ -16,3 +16,10 @@ code/Agent_Tools/.venv/
 # ds4Xtend local runtime state (UI resume across runs) — never committed
 lastsession.json
 # Conversation logs live in logs/ (kept out of git by logs/.gitignore)
+
+# Claude Code local config — never committed
+.claude/
+
+# Project docs are kept local; only LICENSING.md is tracked
+docs/*
+!docs/LICENSING.md
