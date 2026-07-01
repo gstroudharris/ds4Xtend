@@ -281,48 +281,67 @@
     const think = { level: chatThink, reason: chatThink, auto: false };   // Chat: manual on/off toggle (no auto heuristic)
     try {
       let res, level = 0, tries = 0, sentMsgs = messages;
-      for (;;) {
+      for (;;) {                                          // one attempt = fetch + drain the stream; transient failures retry, don't kill the turn
         sentMsgs = fitForSend(null, messages, { level: level, protectFirst: false });   // trim to fit --ctx
         const mt = maxTokensFor(sumTok(sentMsgs));
-        res = await fetch(C.serverUrl + "/v1/chat/completions", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          signal: abortCtrl.signal,
-          body: JSON.stringify({
-            model: C.model, stream: true, stream_options: { include_usage: true },
-            messages: sentMsgs, ...thinkSpread(think.level),
-            ...(mt ? { max_tokens: mt } : {}),
-          }),
-        });
-        if (res.ok) break;
-        const errTxt = await res.text();
-        if (res.status === 400 && /context|too long|exceed|maximum/i.test(errTxt) && level < 2) { learnCtxFromError(errTxt); level++; continue; }
-        if (isTransientErr(res.status, errTxt) && tries < TRANSIENT_TRIES) {   // transient backend blip (e.g. ROCm reset) — retry the same request, don't fail the turn
-          tries++; toast("Backend hiccup — retrying… (" + tries + "/" + TRANSIENT_TRIES + ")");
-          await backoffSleep(tries, abortCtrl.signal); continue;
+        tFirst = null; content = ""; reasoning = ""; usage = null; finishReason = null; outTokEst = 0;   // fresh per attempt: a retry must not double-count a partial stream
+        try {
+          res = await fetch(C.serverUrl + "/v1/chat/completions", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            signal: abortCtrl.signal,
+            body: JSON.stringify({
+              model: C.model, stream: true, stream_options: { include_usage: true },
+              messages: sentMsgs, ...thinkSpread(think.level),
+              ...(mt ? { max_tokens: mt } : {}),
+            }),
+          });
+        } catch (e) {                                      // fetch() REJECTS on a connection-time failure (server down / socket reset)
+          if (e.name === "AbortError") throw e;
+          if (tries < TRANSIENT_TRIES) { tries++; toast("Connection dropped — retrying… (" + tries + "/" + TRANSIENT_TRIES + ")"); await backoffSleep(tries, abortCtrl.signal); continue; }
+          throw e;
         }
-        throw new Error("HTTP " + res.status + " - " + errTxt.slice(0, 180));
-      }
-      const reader = res.body.getReader();
-      const dec = new TextDecoder();
-      let buf = "";
-      for (;;) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        buf += dec.decode(value, { stream: true });
-        const lines = buf.split("\n"); buf = lines.pop();
-        for (const line of lines) {
-          const s = line.trim();
-          if (!s.startsWith("data:")) continue;
-          const data = s.slice(5).trim();
-          if (data === "[DONE]") continue;
-          let j; try { j = JSON.parse(data); } catch { continue; }
-          if (j.usage) usage = j.usage;
-          const fr = j.choices && j.choices[0] && j.choices[0].finish_reason; if (fr) finishReason = fr;
-          const d = (j.choices && j.choices[0] && j.choices[0].delta) || {};
-          if (d.reasoning_content) { if (tFirst === null) tFirst = performance.now(); reasoning += d.reasoning_content; outTokEst++; ui.thinking(reasoning); }
-          if (d.content) { if (tFirst === null) tFirst = performance.now(); content += d.content; outTokEst++; ui.stream(content); }
+        if (!res.ok) {
+          const errTxt = await res.text();
+          if (res.status === 400 && /context|too long|exceed|maximum/i.test(errTxt) && level < 2) { learnCtxFromError(errTxt); level++; continue; }
+          if (isTransientErr(res.status, errTxt) && tries < TRANSIENT_TRIES) {   // transient backend blip (e.g. ROCm reset) — retry the same request, don't fail the turn
+            tries++; toast("Backend hiccup — retrying… (" + tries + "/" + TRANSIENT_TRIES + ")");
+            await backoffSleep(tries, abortCtrl.signal); continue;
+          }
+          throw new Error("HTTP " + res.status + " - " + errTxt.slice(0, 180));
         }
+        if (!res.body) throw new Error("response has no body");
+        try {
+          const reader = res.body.getReader();
+          const dec = new TextDecoder();
+          let buf = "";
+          for (;;) {
+            const { value, done } = await reader.read();
+            if (done) break;
+            buf += dec.decode(value, { stream: true });
+            const lines = buf.split("\n"); buf = lines.pop();
+            for (const line of lines) {
+              const s = line.trim();
+              if (!s.startsWith("data:")) continue;
+              const data = s.slice(5).trim();
+              if (data === "[DONE]") continue;
+              let j; try { j = JSON.parse(data); } catch { continue; }
+              if (j.usage) usage = j.usage;
+              const fr = j.choices && j.choices[0] && j.choices[0].finish_reason; if (fr) finishReason = fr;
+              const d = (j.choices && j.choices[0] && j.choices[0].delta) || {};
+              if (d.reasoning_content) { if (tFirst === null) tFirst = performance.now(); reasoning += d.reasoning_content; outTokEst++; ui.thinking(reasoning); }
+              if (d.content) { if (tFirst === null) tFirst = performance.now(); content += d.content; outTokEst++; ui.stream(content); }
+            }
+          }
+        } catch (e) {                                      // SSE stream dropped mid-flight
+          if (e.name === "AbortError") throw e;
+          if (tFirst === null && tries < TRANSIENT_TRIES) {   // dropped during prefill (nothing streamed yet) — ds4-server just cached that prefill, so a replay returns fast
+            tries++; toast("Stream dropped mid-prefill — retrying… (" + tries + "/" + TRANSIENT_TRIES + ")");
+            await backoffSleep(tries, abortCtrl.signal); continue;
+          }
+          throw e;                                          // mid-generation drop can't be safely resumed → surface it
+        }
+        break;                                              // stream drained cleanly
       }
       // Fallback: some builds embed thinking inline as <think>…</think> in content.
       if (!reasoning) {
@@ -912,23 +931,35 @@
       const want = Number(sendArgs.max_chars) || 0;                      // BM25/max_chars trim (relevance-ordered) BINDS,
       if (!want || want > budget) sendArgs = Object.assign({}, sendArgs, { max_chars: budget });   // not capToolOutput's blunt middle-cut
     }
-    // Abort the fetch on EITHER the run's Stop (ac) OR a timeout, so a wedged backend can't hang the loop and
-    // Stop interrupts an in-flight tool call. (ac is optional — non-agent callers still get the timeout.)
-    const ctl = new AbortController();
-    const onAbort = () => ctl.abort();
-    if (ac) { if (ac.signal.aborted) ctl.abort(); else ac.signal.addEventListener("abort", onAbort, { once: true }); }
     const ms = (name === "execute" || name === "run_command") ? (C.executeTimeoutMs || 130000) : (C.toolTimeoutMs || 30000);   // commands may run test suites/builds
-    const timer = setTimeout(() => ctl.abort(new DOMException("timeout", "TimeoutError")), ms);
-    try {
-      const r = await fetch(C.agentUrl + ep, { method: "POST", headers: { "Content-Type": "application/json", "X-DS4-Run-Id": String(agentRunId) }, body: JSON.stringify(sendArgs), signal: ctl.signal });   // tag spawned background jobs with the owning run
-      return await r.json();
-    } catch (e) {
-      if (ac && ac.signal.aborted) return { error: "stopped by user" };
-      if (e && (e.name === "TimeoutError" || ctl.signal.reason && ctl.signal.reason.name === "TimeoutError")) return { error: "tool '" + name + "' timed out after " + Math.round(ms / 1000) + "s" };
-      return { error: "agent-tools unreachable: " + (e.message || e) };
-    } finally {
-      clearTimeout(timer);
-      if (ac) ac.signal.removeEventListener("abort", onAbort);
+    // Auto-retry ONLY read-only tools, and ONLY when the backend was unreachable (the request never landed) — so a
+    // brief agent-tools (:8082) restart mid-run doesn't fail the turn. Never retry a timeout (the tool may be
+    // mid-execution) or a mutating tool (a lost response could hide a completed write) — the model retries those itself.
+    const canRetry = !isMutating(name);
+    let tries = 0;
+    for (;;) {
+      // Abort the fetch on EITHER the run's Stop (ac) OR a timeout, so a wedged backend can't hang the loop and
+      // Stop interrupts an in-flight tool call. (ac is optional — non-agent callers still get the timeout.)
+      const ctl = new AbortController();
+      const onAbort = () => ctl.abort();
+      if (ac) { if (ac.signal.aborted) ctl.abort(); else ac.signal.addEventListener("abort", onAbort, { once: true }); }
+      const timer = setTimeout(() => ctl.abort(new DOMException("timeout", "TimeoutError")), ms);
+      try {
+        const r = await fetch(C.agentUrl + ep, { method: "POST", headers: { "Content-Type": "application/json", "X-DS4-Run-Id": String(agentRunId) }, body: JSON.stringify(sendArgs), signal: ctl.signal });   // tag spawned background jobs with the owning run
+        return await r.json();
+      } catch (e) {
+        if (ac && ac.signal.aborted) return { error: "stopped by user" };
+        if (e && (e.name === "TimeoutError" || ctl.signal.reason && ctl.signal.reason.name === "TimeoutError")) return { error: "tool '" + name + "' timed out after " + Math.round(ms / 1000) + "s" };
+        if (canRetry && tries < TRANSIENT_TRIES) {   // unreachable (connection refused / reset) — request didn't land; safe to replay a read-only tool
+          tries++;
+          try { await backoffSleep(tries, ac && ac.signal); } catch (_) { return { error: "stopped by user" }; }
+          continue;
+        }
+        return { error: "agent-tools unreachable: " + (e.message || e) };
+      } finally {
+        clearTimeout(timer);
+        if (ac) ac.signal.removeEventListener("abort", onAbort);
+      }
     }
   }
 
@@ -1095,10 +1126,16 @@
       const toolsChrs = opts.noTools ? 0 : toolsChars();   // a forced summary turn sends NO tools -> all budget goes to the reply
       sentMsgs = fitForSend(AGENT_SYSTEM, agentMsgs, { level: level, protectFirst: true, extraTok: tokFromChars(toolsChrs) });   // trim to fit --ctx (reserve the tool-schema tokens)
       const mtA = maxTokensFor(sumTok(sentMsgs) + tokFromChars(AGENT_SYSTEM.length) + tokFromChars(toolsChrs));
-      res = await fetch(C.serverUrl + "/v1/chat/completions", {
-        method: "POST", headers: { "Content-Type": "application/json" }, signal: ac.signal,
-        body: JSON.stringify({ model: C.model, stream: true, stream_options: { include_usage: true }, ...(opts.noTools ? {} : { tools: toolDefs(), tool_choice: "auto" }), messages: [{ role: "system", content: AGENT_SYSTEM + commandsNote() }].concat(sentMsgs), ...thinkSpread(agentThink.level), ...(mtA ? { max_tokens: mtA } : {}) }),
-      });
+      try {
+        res = await fetch(C.serverUrl + "/v1/chat/completions", {
+          method: "POST", headers: { "Content-Type": "application/json" }, signal: ac.signal,
+          body: JSON.stringify({ model: C.model, stream: true, stream_options: { include_usage: true }, ...(opts.noTools ? {} : { tools: toolDefs(), tool_choice: "auto" }), messages: [{ role: "system", content: AGENT_SYSTEM + commandsNote() }].concat(sentMsgs), ...thinkSpread(agentThink.level), ...(mtA ? { max_tokens: mtA } : {}) }),
+        });
+      } catch (e) {                                        // fetch() REJECTS on a connection-time failure (server down / socket reset) — retry like any transient blip
+        if (e.name === "AbortError") throw e;
+        if (tries < TRANSIENT_TRIES) { tries++; toast("Connection dropped — retrying… (" + tries + "/" + TRANSIENT_TRIES + ")"); await backoffSleep(tries, ac.signal); continue; }
+        throw e;
+      }
       if (res.ok) break;
       const errTxt = await res.text();
       if (res.status === 400 && /context|too long|exceed|maximum/i.test(errTxt) && level < 2) { learnCtxFromError(errTxt); level++; continue; }   // learn ctx + compact harder + retry
@@ -1108,7 +1145,9 @@
       }
       throw new Error("HTTP " + res.status + " - " + errTxt.slice(0, 180));
     }
+    if (!res.body) throw new Error("response has no body");
     const reader = res.body.getReader(), dec = new TextDecoder(); let buf = "";
+    try {
     for (;;) {
       const { value, done } = await reader.read(); if (done) break;
       buf += dec.decode(value, { stream: true });
@@ -1136,6 +1175,15 @@
         }
       }
     }
+    } catch (e) {
+      // SSE stream dropped mid-flight. A drop with nothing streamed yet (tFirst === null) means we were still in
+      // the (long) prefill — exactly the idle window where a connection gets killed. ds4-server finishes and
+      // caches that prefill right as the socket drops, so replaying the identical request usually returns fast.
+      // Flag it retryable and remove the now-empty bubble so the caller can re-run the turn cleanly. A drop
+      // mid-generation (tFirst set) can't be safely resumed, and a user Stop (AbortError) must always surface.
+      if (e.name !== "AbortError" && tFirst === null) { ui.finalize(""); const re = new Error("stream dropped during prefill"); re.retryable = true; throw re; }
+      throw e;
+    }
     } finally { clearInterval(liveTimer); }
     const tEnd = performance.now();
     ui.finalize(content);
@@ -1151,6 +1199,23 @@
     logDifficulty({ ts: Date.now(), agent: true, mode: thinkMode, level: agentThink.level, reason: agentThink.reason, auto: agentThink.auto, promptTok: usage && usage.prompt_tokens, completionTok: usage && usage.completion_tokens, reasoningTok: Math.round(reasoning.length / 4), finishReason });
     if (finishReason === "length" && agentThink.auto) agentThink.level = "on";   // escalate-only AFTER recording this turn
     return { content, toolCalls: tcs.filter(Boolean) };
+  }
+
+  // A stream that dies during the long pre-first-token prefill is transient: ds4-server finished (and cached) the
+  // prefill just as the idle socket dropped, so replaying the identical request usually returns fast. agentStreamTurn
+  // flags that case (err.retryable) and clears its empty bubble; here we re-run the turn a few times before giving
+  // up — bounded by the same TRANSIENT_TRIES budget as backend hiccups, and interruptible by Stop.
+  async function streamTurnWithReplay(ac, opts) {
+    for (let stries = 0; ; stries++) {
+      try { return await agentStreamTurn(ac, opts); }
+      catch (e) {
+        if (e && e.retryable && stries < TRANSIENT_TRIES && !ac.signal.aborted) {
+          toast("Stream dropped mid-prefill — retrying… (" + (stries + 1) + "/" + TRANSIENT_TRIES + ")");
+          await backoffSleep(stries + 1, ac.signal); continue;
+        }
+        throw e;
+      }
+    }
   }
 
   // finish_run / safety-net handler: flush the finished transcript, wipe the bloated history, and SEED the next
@@ -1198,7 +1263,7 @@
               injectAgentMessage("[automatic context notice] Context is full — STOP. Do NOT call any tools. Reply now with a concise handoff: what you changed (key files/decisions) and what still remains for the next run.");
               drainPending();
               let wrap = { content: "", toolCalls: [] };
-              try { wrap = await agentStreamTurn(ac, { noTools: true }); } catch (e) { /* keep going with an empty summary */ }
+              try { wrap = await streamTurnWithReplay(ac, { noTools: true }); } catch (e) { /* keep going with an empty summary */ }
               if (agentRunId !== myRun) return;       // Cleared/superseded mid-summary -> don't write back
               const sum = (wrap.content || "").trim();
               if (sum) agentMsgs.push({ role: "assistant", content: sum });   // show + log the real summary before the wipe
@@ -1208,7 +1273,7 @@
             }
           }
         }
-        const turn = await agentStreamTurn(ac);
+        const turn = await streamTurnWithReplay(ac);
         if (agentRunId !== myRun) return;             // Cleared/superseded mid-turn -> don't write back
         const asg = { role: "assistant", content: turn.content || "" };
         if (turn.toolCalls.length) asg.tool_calls = turn.toolCalls.map((tc) => ({ id: tc.id, type: "function", function: { name: tc.name, arguments: stubCallArgs(tc.args, writeCapChars()) } }));   // cap the ECHOED file content on insert (byte-stable); execution below still uses the full tc.args
@@ -1237,6 +1302,22 @@
 
         }
         if (finishRequested || ac.signal.aborted) break;   // finish_run (or Stop) ends the turn loop
+      }
+      // Hit the 25-turn cap without a finish_run and without the context safety net firing: don't end the iteration
+      // silently (a Loop would otherwise restart on top of the full history and look like a hang). Surface it and
+      // capture a tool-less handoff summary, exactly like the context-full path, so finally's applyFinish seeds the
+      // next run cleanly. guard === 26 here only when the while condition (not a break) ended the loop.
+      if (guard > 25 && !finishRequested && !ac.signal.aborted && agentRunId === myRun) {
+        injectAgentMessage("[automatic notice] Reached the 25-turn limit for this run. Do NOT call any tools. Reply now with a concise handoff: what you changed (key files/decisions) and what still remains.");
+        drainPending();
+        let wrap = { content: "", toolCalls: [] };
+        try { wrap = await streamTurnWithReplay(ac, { noTools: true }); } catch (e) { /* keep going with an empty summary */ }
+        if (agentRunId === myRun) {
+          const sum = (wrap.content || "").trim();
+          if (sum) agentMsgs.push({ role: "assistant", content: sum });
+          finishRequested = true;
+          finishSummary = sum || "[auto-summary] Hit the 25-turn limit before finishing; re-assess from the instructions and continue.";
+        }
       }
     } catch (e) {
       if (e.name !== "AbortError" && agentRunId === myRun) { agError(String(e.message || e)); loopErrored = true; }
