@@ -10,8 +10,7 @@
     /* set the theme attribute before first paint so there's no light/dark flash (FOUC) */
     (function () {
       var saved = null; try { saved = localStorage.getItem("ds4x:theme"); } catch (e) {}
-      var sys = matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
-      document.documentElement.setAttribute("data-theme", saved || sys);
+      document.documentElement.setAttribute("data-theme", saved || "light");   // default to the light/bright theme
     })();
   </script>
   <link rel="stylesheet" href="styles.css">
