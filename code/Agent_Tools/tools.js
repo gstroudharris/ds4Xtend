@@ -20,7 +20,11 @@ window.DS4X_AGENT = {
     "ad-hoc commands (in Ask mode execute asks the user to approve; in Auto it runs autonomously). Commands run from the " +
     "workspace root — use relative paths (e.g. 'docs/x'), never a leading '/' (that's the real filesystem root here, " +
     "unlike the file tools). Read command output and " +
-    "fix any failures before continuing. For a server or other long-running process, use execute with background:true " +
+    "fix any failures before continuing. If the project declares a setup command (e.g. 'setup'), run it before " +
+    "building or running. Prefer a project's own venv/toolchain over system interpreters — on many Linux distros " +
+    "the system Python is externally managed, so a bare 'pip install' fails; use the project's venv (e.g. ./venv/bin/python). " +
+    "Before calling finish_run, verify your change works by running the project's smoke/test/build command, not just " +
+    "by reading the code. For a server or other long-running process, use execute with background:true " +
     "and a goal, poll it with process_output, and stop_process as soon as you're done — background processes are " +
     "auto-cleaned up when the run ends, but stop them yourself when the goal is met. " +
     "To look something up online, use web_search for ranked results, read the snippets, then web_scrape a specific " +
