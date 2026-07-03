@@ -6,7 +6,7 @@
       "type": "object",
       "properties": {
         "query": { "type": "string", "description": "Literal text to find." },
-        "path": { "type": "string", "description": "Optional subdirectory (relative to the workspace root) to limit the search; omit to search the whole workspace." }
+        "path": { "type": "string", "description": "Optional file OR subdirectory (relative to the workspace root) to limit the search; omit to search the whole workspace." }
       },
       "required": ["query"]
     }
