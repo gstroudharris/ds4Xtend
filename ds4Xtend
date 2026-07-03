@@ -333,20 +333,29 @@ else
   ok "backend: $DS4_BACKEND   ds4-server flags: ${FLAGS:-(none / cpu)}   ctx: $SERVER_CTX   (override: --ds4-flags / DS4_BACKEND / DS4_CTX / DS4_SERVER_ENV / DS4_LD_PATH)"
 fi
 SERVER_LOG="$RUN_DIR/ds4-server.log"
-if [ "$USE_SCRIPT" = "1" ]; then
-  # Delegate: the script owns backend/env/model/ctx. We append ONLY the non-negotiables --cors --port
-  # (no LD_LIBRARY_PATH / DS4_SERVER_ENV / --ctx here — those are the script's responsibility).
-  ( cd "$DS4_DIR"; exec "$SERVER_SCRIPT" --cors --port "$SERVER_PORT" ) > "$SERVER_LOG" 2>&1 &
-else
-  ( cd "$DS4_DIR"
-    [ -n "$DS4_LD_PATH" ] && export LD_LIBRARY_PATH="$DS4_LD_PATH:${LD_LIBRARY_PATH:-}"
-    for kv in $DS4_SERVER_ENV; do export "$kv"; done
-    exec ./ds4-server $FLAGS --ctx "$SERVER_CTX" --cors --port "$SERVER_PORT"
-  ) > "$SERVER_LOG" 2>&1 &
-fi
-register "ds4-server" "$!"
+SERVER_PID=""; SERVER_IDX=""
+# (Re)launch ds4-server with the resolved backend/flags, track its PID in the teardown registry (updating the SAME
+# slot on a restart, so order + cleanup stay correct), and wait until it answers /v1/models. Factored out so the
+# supervisor (section 6) can restart it if a GPU reset crashes it. Returns wait_http's status (0 = online).
+start_ds4_server() {
+  if [ "$USE_SCRIPT" = "1" ]; then
+    # Delegate: the script owns backend/env/model/ctx. We append ONLY the non-negotiables --cors --port
+    # (no LD_LIBRARY_PATH / DS4_SERVER_ENV / --ctx here — those are the script's responsibility).
+    ( cd "$DS4_DIR"; exec "$SERVER_SCRIPT" --cors --port "$SERVER_PORT" ) > "$SERVER_LOG" 2>&1 &
+  else
+    ( cd "$DS4_DIR"
+      [ -n "$DS4_LD_PATH" ] && export LD_LIBRARY_PATH="$DS4_LD_PATH:${LD_LIBRARY_PATH:-}"
+      for kv in $DS4_SERVER_ENV; do export "$kv"; done
+      exec ./ds4-server $FLAGS --ctx "$SERVER_CTX" --cors --port "$SERVER_PORT"
+    ) > "$SERVER_LOG" 2>&1 &
+  fi
+  SERVER_PID=$!
+  if [ -z "$SERVER_IDX" ]; then register "ds4-server" "$SERVER_PID"; SERVER_IDX=$(( ${#SVC_PIDS[@]} - 1 ));
+  else SVC_PIDS[$SERVER_IDX]=$SERVER_PID; fi
+  wait_http "http://127.0.0.1:$SERVER_PORT/v1/models" 180
+}
 printf '    waiting for model load '
-if wait_http "http://127.0.0.1:$SERVER_PORT/v1/models" 180; then
+if start_ds4_server; then
   printf '\n'; ok "ds4-server online"
 else
   printf '\n'; errln "ds4-server did not come up — last log lines:"; tail -n 18 "$SERVER_LOG" >&2
@@ -443,6 +452,27 @@ printf '    %sOpen:%s  %shttp://localhost:%s%s\n' "$B" "$RST" "$CYN" "$WEB_PORT"
 printf '    Live logs below (%s[ds4-server.log]%s / %s[sidecar.log]%s / %s[frontend.log]%s).  %sPress Ctrl+C to stop everything.%s\n\n' \
   "$CYN" "$RST" "$DIM" "$RST" "$GRN" "$RST" "$B" "$RST"
 tail -n +1 -F "$SERVER_LOG" "$SIDE_LOG" "$AGENT_LOG" "$WEB_LOG" & TAIL_PID=$!
-wait "$TAIL_PID"
-# tail ended on its own (a server died?) — tear down too.
+
+# ---------- 6. supervise ds4-server ----------
+# A GPU reset (MODE2) can crash ds4-server outright — its compute context is destroyed (see: unspecified launch
+# failure). Auto-restart it, bounded, with a short GPU-recovery cooldown, so the dashboard's wait-and-resume picks
+# up instead of the run dying against a dead backend. Ctrl+C still tears everything down via the INT/TERM trap
+# (it fires during the sleep below).
+SERVER_RESTARTS=0
+MAX_SERVER_RESTARTS="${DS4_MAX_SERVER_RESTARTS:-5}"
+while kill -0 "$TAIL_PID" 2>/dev/null; do
+  if ! kill -0 "$SERVER_PID" 2>/dev/null; then          # ds4-server exited unexpectedly (crash / GPU reset)
+    if [ "$SERVER_RESTARTS" -ge "$MAX_SERVER_RESTARTS" ]; then
+      errln "ds4-server crashed and hit the restart limit ($MAX_SERVER_RESTARTS). The GPU may be wedged — check:  journalctl -k -b0 | grep -iE 'amdgpu.*(reset|wedged)'. Stopping."
+      break
+    fi
+    SERVER_RESTARTS=$((SERVER_RESTARTS + 1))
+    warn "ds4-server exited unexpectedly (a GPU reset can crash it) — restarting ($SERVER_RESTARTS/$MAX_SERVER_RESTARTS)…"
+    sleep "$(( SERVER_RESTARTS < 3 ? 3 : 8 ))"          # brief GPU-recovery cooldown before relaunch
+    printf '    waiting for model load '
+    if start_ds4_server; then printf '\n'; ok "ds4-server back online (restart $SERVER_RESTARTS)"; else printf '\n'; warn "ds4-server restart $SERVER_RESTARTS not responding yet"; fi
+  fi
+  sleep 3
+done
+# tail gone, or restart budget spent — tear down.
 cleanup

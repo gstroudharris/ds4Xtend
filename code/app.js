@@ -206,6 +206,29 @@
     return true;
   }
 
+  // --- ds4-server crash recovery ---
+  // A GPU reset can crash ds4-server outright (its compute context is destroyed), not just return a 503. Probe health
+  // quickly, and — when it's genuinely down — wait (abortably) for it to come back. The launcher auto-restarts it, so
+  // an agent Loop can resume on the next iteration instead of dying with a cryptic connection error.
+  async function serverAlive(timeoutMs) {
+    try {
+      const c = new AbortController(); const to = setTimeout(() => c.abort(), timeoutMs || 1500);
+      const r = await fetch(C.serverUrl + "/v1/models", { signal: c.signal }); clearTimeout(to);
+      return r.ok;
+    } catch (e) { return false; }
+  }
+  async function waitForServerBack(signal) {
+    const maxMs = C.serverDownWaitMs || 120000, start = performance.now();
+    toast("ds4-server stopped responding — a GPU reset can crash it. Waiting for it to come back…");
+    while (performance.now() - start < maxMs) {
+      if (signal && signal.aborted) return false;
+      setStatus("offline", "ds4-server down — waiting for restart… " + Math.round((performance.now() - start) / 1000) + "s");
+      try { await backoffSleep(3, signal); } catch (e) { return false; }   // ~1.6 s between probes, interruptible by Stop
+      if (await serverAlive(2500)) { setStatus("online", "ds4-server online"); return true; }
+    }
+    return false;
+  }
+
   let stick = true, rendering = false;
   const stickToggle = $("stickToggle");
   function reflectStick() { stickToggle.classList.toggle("is-on", stick); stickToggle.textContent = stick ? "↓ Following" : "↓ Follow"; }
@@ -369,7 +392,12 @@
       if (finishReason === "length") noticeTruncation(ui, usedTok);
     } catch (e) {
       if (e.name === "AbortError") { ui.finalize(content || "_(stopped)_"); finalizeTurnMetrics({ t0, tFirst, tEnd: performance.now(), usage, outTokEst, estPrompt }); }
-      else { ui.error(String(e.message || e)); loopErrored = true; }
+      else {
+        const up = await serverAlive(1500);   // a GPU reset can crash ds4-server — say so specifically instead of a cryptic error
+        ui.error(up ? String(e.message || e)
+                    : "ds4-server is unreachable — it likely crashed (a GPU reset can kill it). Restart it with ./ds4Xtend");
+        loopErrored = true;
+      }
     } finally {
       clearInterval(liveTimer);
       streaming = false; setSendStop(false); abortCtrl = null;
@@ -1324,7 +1352,21 @@
         }
       }
     } catch (e) {
-      if (e.name !== "AbortError" && agentRunId === myRun) { agError(String(e.message || e)); loopErrored = true; }
+      if (e.name !== "AbortError" && agentRunId === myRun) {
+        // A GPU reset can crash ds4-server outright (not just a 503). If it's now unreachable, wait for the launcher
+        // to restart it and continue the Loop fresh (reuses applyFinish to wipe the interrupted run + seed the next);
+        // otherwise surface the error — with a specific "restart it" hint when the server is actually gone.
+        const up = await serverAlive(1500);
+        if (!up && looping && await waitForServerBack(ac.signal)) {
+          toast("ds4-server crashed (likely a GPU reset) and was restarted — continuing the loop.");
+          finishRequested = true;
+          finishSummary = "[recovery] The previous run was cut off by a ds4-server crash (GPU reset). Re-read the instructions and continue.";
+        } else if (!ac.signal.aborted) {
+          agError(up ? String(e.message || e)
+                     : "ds4-server is unreachable — it likely crashed (a GPU reset can kill it). Restart it with ./ds4Xtend");
+          loopErrored = true;
+        }
+      }
     } finally {
       fetch(C.agentUrl + "/jobs/cleanup", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ run_id: String(myRun) }) }).catch(() => {});   // reap this run's run-scoped background processes
       if (agentRunId === myRun) {                       // not superseded by a user Clear (which bumps agentRunId)
