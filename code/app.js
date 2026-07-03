@@ -175,11 +175,17 @@
   // request a few times with abort-aware exponential backoff before surfacing the error. Genuine 4xx (client
   // errors) and user-Stop (AbortError) are NEVER retried. Shared by runStream() and agentStreamTurn().
   const TRANSIENT_TRIES = C.transientRetries != null ? C.transientRetries : 3;
+  const GPU_STATE_TRIES = C.gpuStateRetries != null ? C.gpuStateRetries : 6;   // GPU state resets recover slowly -> more, patient attempts
   function isTransientErr(status, txt) {
     return status >= 500 || status === 429 || /state reset|prefill|backend/i.test(txt || "");
   }
-  function backoffSleep(tries, signal) {                 // abort-aware: Stop interrupts the wait immediately
-    const base = C.transientBackoffMs || 400, cap = C.transientBackoffCapMs || 2000;
+  // A GPU/backend STATE failure (ROCm "prefill state reset failed", OOM, device/HIP error) — not a plain 5xx or a
+  // network blip. The GPU needs SECONDS to recover its prefill state, so a sub-second retry just re-hits the stuck
+  // state — and hammering it can prolong the wedge. This class gets a longer cooldown + more attempts (below).
+  function isGpuStateErr(txt) { return /state reset|out of memory|\boom\b|hip\w*error|device (?:lost|error)|rocm|cuda error/i.test(txt || ""); }
+  function backoffSleep(tries, signal, slow) {           // abort-aware: Stop interrupts the wait immediately. slow -> patient GPU-recovery schedule
+    const base = slow ? (C.gpuBackoffMs || 2000) : (C.transientBackoffMs || 400);
+    const cap  = slow ? (C.gpuBackoffCapMs || 12000) : (C.transientBackoffCapMs || 2000);
     const ms = Math.min(cap, base * Math.pow(2, tries - 1));
     return new Promise((resolve, reject) => {
       if (signal && signal.aborted) return reject(new DOMException("aborted", "AbortError"));
@@ -187,6 +193,17 @@
       function onAbort() { clearTimeout(t); reject(new DOMException("aborted", "AbortError")); }
       if (signal) signal.addEventListener("abort", onAbort, { once: true });
     });
+  }
+  // Shared transient-retry policy for the chat + agent fetch loops. Returns true (AFTER waiting) if the caller should
+  // retry, false if it should surface the error. A ROCm/GPU state-reset error gets the longer cooldown + bigger budget
+  // so the backend has time to recover instead of us hammering it with sub-second retries.
+  async function retryTransient(status, txt, tries, signal) {
+    if (!isTransientErr(status, txt)) return false;
+    const gpu = isGpuStateErr(txt), budget = gpu ? GPU_STATE_TRIES : TRANSIENT_TRIES;
+    if (tries >= budget) return false;
+    toast((gpu ? "GPU busy — letting it reset… " : "Backend hiccup — retrying… ") + (tries + 1) + "/" + budget);
+    await backoffSleep(tries + 1, signal, gpu);
+    return true;
   }
 
   let stick = true, rendering = false;
@@ -297,10 +314,7 @@
         if (!res.ok) {
           const errTxt = await res.text();
           if (res.status === 400 && /context|too long|exceed|maximum/i.test(errTxt) && level < 2) { learnCtxFromError(errTxt); level++; continue; }
-          if (isTransientErr(res.status, errTxt) && tries < TRANSIENT_TRIES) {   // transient backend blip (e.g. ROCm reset) — retry the same request, don't fail the turn
-            tries++; toast("Backend hiccup — retrying… (" + tries + "/" + TRANSIENT_TRIES + ")");
-            await backoffSleep(tries, abortCtrl.signal); continue;
-          }
+          if (await retryTransient(res.status, errTxt, tries, abortCtrl.signal)) { tries++; continue; }   // ROCm/backend blip — waits (longer for GPU state resets) then retries; doesn't fail the turn
           throw new Error("HTTP " + res.status + " - " + errTxt.slice(0, 180));
         }
         if (!res.body) throw new Error("response has no body");
@@ -1132,10 +1146,7 @@
       if (res.ok) break;
       const errTxt = await res.text();
       if (res.status === 400 && /context|too long|exceed|maximum/i.test(errTxt) && level < 2) { learnCtxFromError(errTxt); level++; continue; }   // learn ctx + compact harder + retry
-      if (isTransientErr(res.status, errTxt) && tries < TRANSIENT_TRIES) {   // transient backend blip (e.g. ROCm "prefill state reset failed") — retry, don't kill the loop
-        tries++; toast("Backend hiccup — retrying… (" + tries + "/" + TRANSIENT_TRIES + ")");
-        await backoffSleep(tries, ac.signal); continue;
-      }
+      if (await retryTransient(res.status, errTxt, tries, ac.signal)) { tries++; continue; }   // ROCm/backend blip — waits (longer for GPU state resets) then retries; doesn't kill the loop
       throw new Error("HTTP " + res.status + " - " + errTxt.slice(0, 180));
     }
     if (!res.body) throw new Error("response has no body");
