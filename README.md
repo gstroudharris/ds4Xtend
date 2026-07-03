@@ -152,6 +152,48 @@ diverges your clone from upstream). Ignore them locally instead, in **`ds4/.git/
 - `code/bench_thinking.py` — measures whether "Auto" thinking-mode saves time on this box (think on/off savings + the cost of switching); run against a live ds4-server, esp. on the slow box
 - `docs/LICENSING.md` — licensing guide: what GPLv3 means here, third-party components, and the SPDX header convention for new files
 
+## Known issues
+
+### AMD 780M / gfx1103 (ROCm): GPU MES hang → ds4-server crash
+
+On the Radeon 780M (Phoenix, gfx1103) — and other Phoenix/Hawk-Point APUs — heavy ROCm prefill can
+wedge the GPU's **MES** (command scheduler) firmware. Under memory pressure the kernel does an SVM
+invalidation → queue eviction → `MES REMOVE_QUEUE` never completes → the amdgpu driver force-resets the
+GPU (MODE2). The reset destroys ds4-server's compute context, so ds4-server dies with `unspecified launch
+failure` (HIP 719) mid-prefill. This is a known, **still-open upstream AMD/kernel bug** — not a ds4Xtend
+or ds4 bug; gfx1103 is unofficial ROCm (hence the required `HSA_OVERRIDE_GFX_VERSION=11.0.0`):
+[ROCm#6386](https://github.com/ROCm/ROCm/issues/6386) ·
+[ROCm#6273](https://github.com/ROCm/ROCm/issues/6273) ·
+[ROCm#4444](https://github.com/ROCm/ROCm/issues/4444) ·
+[Ubuntu#2147367](https://www.mail-archive.com/ubuntu-bugs@lists.ubuntu.com/msg6259954.html).
+
+**Symptoms:** a run/Loop stalls; the dashboard shows `GPU busy — letting it reset…`, a connection error,
+or `ds4-server … restart it`. The desktop usually survives (the driver recovers the GPU), but the compute
+context is gone.
+
+**Verify it was a GPU reset** (`dmesg` is often root-restricted; the systemd journal is not):
+
+```bash
+journalctl -k -b 0 | grep -iE 'amdgpu.*(reset|wedged)|MES .*unrecoverable'
+grep -iE 'launch failure|synchronize failed' /tmp/ds4xtend.*/ds4-server.log
+cat /sys/class/drm/card0/device/devcoredump/data   # driver crash dump; exists for ~5 min after a reset
+```
+
+**What ds4Xtend does about it (automatic):**
+- Recoverable `rocm prefill state reset failed` 503s → a patient GPU cooldown retry (≈2→4→8→12 s, up to
+  `gpuStateRetries`, default 6) instead of hammering the still-resetting GPU.
+- ds4-server killed outright → the launcher **auto-restarts** it (bounded by `DS4_MAX_SERVER_RESTARTS`,
+  default 5, with a cooldown) and the dashboard **waits and resumes** the agent Loop (up to
+  `serverDownWaitMs`, default 120 s), instead of dying with a cryptic error.
+
+**Reduce how often it fires** (the trigger is memory pressure / SVM churn):
+- Prefer a **newer kernel + `linux-firmware`** (newer amdgpu driver + MES blobs): `sudo apt full-upgrade`,
+  then reboot. Reversible — old kernels stay in GRUB, so boot the previous one if a new one regresses.
+- **Lower `--ctx`** (smaller KV cache → less GTT/VRAM pressure). The frontend already tightens context on
+  ROCm; go smaller if it still crashes. Full residency is fastest but stresses SVM hardest.
+- **Don't bump ROCm to fix this** — the bug is in the kernel (KFD/SVM/MES), not the ROCm runtime. A ROCm
+  version change won't help and would force a ds4-server rebuild (gfx1103 is unofficial).
+
 ## License
 
 Copyright (C) 2026 Grant Harris
