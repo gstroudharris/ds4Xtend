@@ -1,12 +1,15 @@
 {
   "function": {
     "name": "search",
-    "description": "Search file contents for a literal substring (not a regex). Returns matching file:line snippets.",
+    "description": "Search file contents for a literal substring (not a regex). Returns matching file:line snippets with surrounding context. Skips binary files, build/dependency dirs (node_modules, __pycache__, build, target, …) and .gitignore'd names.",
     "parameters": {
       "type": "object",
       "properties": {
-        "query": { "type": "string", "description": "Literal text to find." },
-        "path": { "type": "string", "description": "Optional file OR subdirectory (relative to the workspace root) to limit the search; omit to search the whole workspace." }
+        "query": { "type": "string", "description": "Literal text to find (not a regex)." },
+        "path": { "type": "string", "description": "Optional file OR subdirectory (relative to the workspace root) to limit the search; omit to search the whole workspace." },
+        "context": { "type": "number", "description": "Lines of surrounding context to include on each side of a match (default 2, max 8; 0 for just the matching line)." },
+        "case_sensitive": { "type": "boolean", "description": "Force case sensitivity. Omit for smart-case: case-insensitive unless the query contains an uppercase letter." },
+        "max_results": { "type": "number", "description": "Cap on matches returned (default 60). If the result is truncated, narrow the query or set 'path'." }
       },
       "required": ["query"]
     }
