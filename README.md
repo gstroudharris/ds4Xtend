@@ -195,10 +195,11 @@ cat /sys/class/drm/card0/device/devcoredump/data   # driver crash dump; exists f
   version change won't help and would force a ds4-server rebuild (gfx1103 is unofficial).
 
 **Status (2026-07-03):** kernel updated `6.18.7` → **`7.0.11`** (newer amdgpu driver); `linux-firmware`
-still `20260221` (**no newer MES blob available yet — and the MES firmware is the actual culprit, so it's
-unchanged**); ROCm pinned at **7.1.0** (no rebuild). The GPU came up clean on 7.0.11 (0 resets at boot),
-but **stability under a heavy prefill Loop is still to be confirmed** — retest and watch
-`journalctl -k -b0 | grep -c 'device wedged'` (stays `0` = no resets). Rollback to `6.18.7` remains in GRUB.
+still `20260221` (no newer MES blob available yet); ROCm pinned at **7.1.0** (no rebuild).
+**Confirmed under load:** a ~2.5 h agent-Loop session of heavy prefill on 7.0.11 produced **0 GPU resets**
+(`journalctl -k -b0 | grep -c 'device wedged'` stayed `0`), vs. 10 resets on the previous 6.18.7 boot —
+the newer kernel's driver rides out what the old one reset on. Keep watching after kernel updates;
+rollback to `6.18.7` remains in GRUB.
 
 ## License
 
