@@ -201,6 +201,15 @@ still `20260221` (no newer MES blob available yet); ROCm pinned at **7.1.0** (no
 the newer kernel's driver rides out what the old one reset on. Keep watching after kernel updates;
 rollback to `6.18.7` remains in GRUB.
 
+**Shutdown can trigger it too (fixed 2026-07-03):** killing ds4-server while it holds live compute queues
+(the old Ctrl+C teardown SIGKILLed it ~1 s after SIGTERM) makes the kernel evict its queues mid-MES-work —
+same MES hang, GPU reset, and desktop-app crashes as fallout (observed: `Failed to evict process queues` →
+`MES failed to respond to msg=REMOVE_QUEUE` → MODE2 reset → a Wayland applet segfault 6 s later). The
+launcher now runs ds4-server in its own session (`setsid`, so a terminal Ctrl+C can't hit it directly) and
+cleanup gives it a real drain window (`DS4_DRAIN_SECS`, default 20 s) before any last-resort SIGKILL,
+warning explicitly when it has to force. If your desktop flickers or an app dies right after a Ctrl+C,
+check `journalctl -k -b0 --since '-5 min' | grep -i 'device wedged'`.
+
 ## License
 
 Copyright (C) 2026 Grant Harris

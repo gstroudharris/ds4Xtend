@@ -91,6 +91,22 @@ cleanup() {
       pgrep -f -- "$_bp" >/dev/null 2>&1 && { printf '  %s•%s closing dashboard window\n' "$CYN" "$RST"; pkill -TERM -f -- "$_bp" 2>/dev/null; }
     done
   fi
+  # ds4-server holds live GPU compute queues. Killing it hard (or only ~1s after SIGTERM) makes the kernel
+  # evict its queues while the MES is mid-work — the exact trigger for the gfx1103 MES-hang GPU reset that
+  # crashed the desktop on a previous Ctrl+C (see README "Known issues"). Give it a real drain window; only
+  # SIGKILL if it truly won't exit, and say so — a GPU reset may follow that.
+  local drain="${DS4_DRAIN_SECS:-20}" waited=0 srv=""
+  for ((i=0; i<${#SVC_PIDS[@]}; i++)); do [ "${SVC_NAMES[$i]}" = "ds4-server" ] && srv="${SVC_PIDS[$i]}"; done
+  if [ -n "$srv" ] && kill -0 "$srv" 2>/dev/null; then
+    printf '  %s•%s waiting for ds4-server to drain GPU queues (max %ss — prevents a GPU reset)' "$CYN" "$RST" "$drain"
+    while kill -0 "$srv" 2>/dev/null && [ "$waited" -lt "$drain" ]; do sleep 1; waited=$((waited+1)); printf '.'; done
+    printf '\n'
+    if kill -0 "$srv" 2>/dev/null; then
+      printf '    %s!%s ds4-server did not exit within %ss — forcing (a GPU reset may follow)\n' "$YEL" "$RST" "$drain"
+    else
+      printf '    %s✓%s ds4-server exited cleanly (%ss)\n' "$GRN" "$RST" "$waited"
+    fi
+  fi
   sleep 1
   for pid in ${SVC_PIDS[@]+"${SVC_PIDS[@]}"}; do kill -9 "$pid" 2>/dev/null; done  # force stragglers (dashboard excluded — closed gracefully above)
   wait 2>/dev/null
@@ -338,15 +354,19 @@ SERVER_PID=""; SERVER_IDX=""
 # slot on a restart, so order + cleanup stay correct), and wait until it answers /v1/models. Factored out so the
 # supervisor (section 6) can restart it if a GPU reset crashes it. Returns wait_http's status (0 = online).
 start_ds4_server() {
+  # Run ds4-server in its OWN session (setsid) so a terminal Ctrl+C doesn't SIGINT it directly alongside us:
+  # an uncontrolled signal mid-compute starts queue teardown while the MES is busy — the gfx1103 GPU-reset
+  # trigger. With setsid, shutdown is solely cleanup()'s orchestrated SIGTERM + drain window.
+  local SETSID=""; command -v setsid >/dev/null 2>&1 && SETSID="setsid"
   if [ "$USE_SCRIPT" = "1" ]; then
     # Delegate: the script owns backend/env/model/ctx. We append ONLY the non-negotiables --cors --port
     # (no LD_LIBRARY_PATH / DS4_SERVER_ENV / --ctx here — those are the script's responsibility).
-    ( cd "$DS4_DIR"; exec "$SERVER_SCRIPT" --cors --port "$SERVER_PORT" ) > "$SERVER_LOG" 2>&1 &
+    ( cd "$DS4_DIR"; exec $SETSID "$SERVER_SCRIPT" --cors --port "$SERVER_PORT" ) > "$SERVER_LOG" 2>&1 &
   else
     ( cd "$DS4_DIR"
       [ -n "$DS4_LD_PATH" ] && export LD_LIBRARY_PATH="$DS4_LD_PATH:${LD_LIBRARY_PATH:-}"
       for kv in $DS4_SERVER_ENV; do export "$kv"; done
-      exec ./ds4-server $FLAGS --ctx "$SERVER_CTX" --cors --port "$SERVER_PORT"
+      exec $SETSID ./ds4-server $FLAGS --ctx "$SERVER_CTX" --cors --port "$SERVER_PORT"
     ) > "$SERVER_LOG" 2>&1 &
   fi
   SERVER_PID=$!
