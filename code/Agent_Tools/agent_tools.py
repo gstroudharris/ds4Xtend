@@ -67,7 +67,15 @@ def safe_path(rel):
     root = workspace()
     if not root:
         raise PermissionError("no workspace selected")
-    rel = (rel or "").strip().lstrip("/")          # neutralize absolute paths
+    rel = (rel or "").strip()
+    # The model often emits ABSOLUTE paths (ds4's native tools accept them). Accept one when it already points
+    # inside the locked workspace — confinement unchanged; anything outside falls through to the workspace-rooted
+    # interpretation below ("/docs/x" -> <root>/docs/x), which for a truly foreign path just fails file-not-found.
+    if os.path.isabs(rel):
+        real = os.path.realpath(rel)
+        if real == root or real.startswith(root + os.sep):
+            return real
+    rel = rel.lstrip("/")                          # neutralize absolute paths
     real = os.path.realpath(os.path.join(root, rel))   # resolves .. and symlinks
     if real != root and not real.startswith(root + os.sep):
         raise PermissionError("path escapes workspace: %r" % rel)

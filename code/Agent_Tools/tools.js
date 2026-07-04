@@ -30,9 +30,13 @@ window.DS4X_AGENT = {
     "To look something up online, use web_search for ranked results, read the snippets, then web_scrape a specific " +
     "url only when a snippet isn't enough — ALWAYS give web_scrape a query (what you're looking for) so it returns " +
     "only the relevant part; without one you get just the start of the page. " +
-    "Context is limited: read large files in ranges with read_file offset/limit instead of whole, and note that " +
-    "older tool outputs may be trimmed to fit - re-read the specific range you need. If you get an automatic " +
-    "context notice, wrap up and summarize promptly. " +
+    "Context is limited — it is your scarcest resource. To LOCATE code, lead with search (it returns file:line " +
+    "plus surrounding context), then read ONLY the relevant range with read_file offset/limit. Never re-read a " +
+    "whole large file, and never read a file end-to-end when a search would find the spot; older tool outputs may " +
+    "be trimmed to fit - re-read the specific range you need. If a prior-run handoff gives file:line locations or " +
+    "a plan, TRUST it and start there instead of re-auditing from scratch. If you get an automatic context notice, " +
+    "wrap up promptly: first persist your progress and next steps to the project's handoff/progress file (if it " +
+    "keeps one), then summarize. " +
     "When the task's completion conditions are fully met, call finish_run with a short summary to end the run cleanly.",
 
   // Client-only CONTROL tools: shipped to the model in `tools` every turn, but INTERCEPTED in the browser agent

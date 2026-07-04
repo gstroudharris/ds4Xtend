@@ -702,10 +702,12 @@
     const pct = used / ctx, warn = C.contextWarnPct || 0.8, danger = C.contextDangerPct || 0.92;
     if (pct >= danger && nudgeState < 2) {
       nudgeState = 2;
-      injectAgentMessage("[automatic context notice] The context window is nearly full (~" + Math.round(pct * 100) + "%). Stop opening new files or running searches. Finish the current step now, then give the user a concise summary of what you did and what remains.");
+      // Tools are still available at this stage — this is the model's LAST chance to persist durable state (the
+      // final wrap-up turn runs tool-less, so it cannot write files). Order matters: persist first, then summarize.
+      injectAgentMessage("[automatic context notice] The context window is nearly full (~" + Math.round(pct * 100) + "%). Stop opening new files or running searches. FIRST: if this project keeps a handoff/progress file (see its instructions), update it NOW with what's done and what remains — you will NOT be able to write files later. Then finish the current step and summarize.");
     } else if (pct >= warn && nudgeState < 1) {
       nudgeState = 1;
-      injectAgentMessage("[automatic context notice] You have used ~" + Math.round(pct * 100) + "% of the available context. Start wrapping up: prefer finishing over exploring, avoid large reads, and summarize soon.");
+      injectAgentMessage("[automatic context notice] You have used ~" + Math.round(pct * 100) + "% of the available context. Start wrapping up: prefer finishing over exploring, avoid large reads. If this project keeps a handoff/progress file, update it with your progress and plan before the context runs out.");
     }
   }
 
@@ -1253,11 +1255,22 @@
   // finish_run / safety-net handler: flush the finished transcript, wipe the bloated history, and SEED the next
   // loop iteration with a compact handoff — so the next prefill is tiny and stable (no cold re-prefill). Reuses
   // the Clear machinery; called from runAgent's finally AFTER the save/log flush, only while looping.
+  // Strip leaked model-control markup from a wrap-up summary. The forced tool-less turn makes the model TRY to call
+  // tools anyway — with the tool path stripped, raw DSML stanzas (<｜DSML｜>… / DSML_START tokens) leak into the text.
+  // Everything from the first control token onward is tool-call junk, not prose; seeding it into the next run pollutes
+  // the prompt (and can even re-trigger a call). Also drops stray <think> tags seen in the same failure mode.
+  function stripDsml(s) {
+    s = String(s || "");
+    const i = s.search(/<[|｜][^>\n]{0,60}[|｜]>|\bDSML_(START|END)\b/);   // ASCII | or fullwidth ｜ token markers
+    if (i >= 0) s = s.slice(0, i);
+    return s.replace(/<\/?think>/gi, "").trim();
+  }
+
   function applyFinish(summary) {
     resetLog("agent");                                 // flush the just-finished conversation to the log, reset log name
     agentMsgs = []; agentMessagesEl.innerHTML = ""; $("agentEmpty").hidden = false;
     nudgeState = 0; pendingInject = [];                // re-arm nudges; drop any queued notices from the run we ended
-    const s = (summary || "").trim() || "(previous run ended; no summary was provided)";
+    const s = stripDsml(summary) || "(previous run ended; no summary was provided)";
     injectAgentMessage("[handoff from previous run — continue, don't redo completed work]\n" + s, "user");
     saveAgent();
     lastStateJson = ""; saveState(false);              // mirror the purge so a reload can't resurrect the cleared run
@@ -1282,6 +1295,8 @@
       while (guard++ < 25) {
         if (ac.signal.aborted) break;                 // Stop pressed
         maybeNudge();                                 // enqueue a wrap-up notice if the context is filling
+        if (guard === (C.turnWarnAt || 21))           // near the 25-turn cap: last turns WITH tools — persist state now
+          injectAgentMessage("[automatic notice] You are on turn " + guard + " of 25 for this run. Wrap up: if this project keeps a handoff/progress file, update it NOW with what's done and what remains (the final turn runs without tools), then finish or call finish_run.");
         drainPending();                               // deliver queued out-of-band messages at this turn boundary
         if (looping) {                                // SAFETY NET: never let Loop pin context full if the model won't finish_run
           const ctx = currentCtx();
@@ -1297,7 +1312,7 @@
               let wrap = { content: "", toolCalls: [] };
               try { wrap = await streamTurnWithReplay(ac, { noTools: true }); } catch (e) { /* keep going with an empty summary */ }
               if (agentRunId !== myRun) return;       // Cleared/superseded mid-summary -> don't write back
-              const sum = (wrap.content || "").trim();
+              const sum = stripDsml(wrap.content);   // forced tool-less turns can leak raw DSML — never seed it forward
               if (sum) agentMsgs.push({ role: "assistant", content: sum });   // show + log the real summary before the wipe
               finishRequested = true;
               finishSummary = sum || "[auto-summary] Context filled before the run finished; re-assess from the instructions and continue.";
@@ -1345,7 +1360,7 @@
         let wrap = { content: "", toolCalls: [] };
         try { wrap = await streamTurnWithReplay(ac, { noTools: true }); } catch (e) { /* keep going with an empty summary */ }
         if (agentRunId === myRun) {
-          const sum = (wrap.content || "").trim();
+          const sum = stripDsml(wrap.content);       // forced tool-less turns can leak raw DSML — never seed it forward
           if (sum) agentMsgs.push({ role: "assistant", content: sum });
           finishRequested = true;
           finishSummary = sum || "[auto-summary] Hit the 25-turn limit before finishing; re-assess from the instructions and continue.";
