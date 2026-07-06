@@ -63,13 +63,14 @@ def run(args, ctx):
     ignore = _ignore_patterns(root)
     ignored = (lambda name: any(fnmatch.fnmatch(name, p) for p in ignore)) if ignore else (lambda name: False)
 
-    hits, scanned = [], 0
+    hits, scanned, skipped_oversized = [], 0, 0
 
     def scan_file(fp):                                          # returns True once the result budget is spent
-        nonlocal scanned
+        nonlocal scanned, skipped_oversized
         scanned += 1
         try:
             if os.path.getsize(fp) > ctx.MAX_BYTES:
+                skipped_oversized += 1                          # visible in the result — a silent skip looks like "no matches"
                 return False
             rp = os.path.realpath(fp)
             if rp != root and not rp.startswith(root + os.sep):
@@ -110,6 +111,9 @@ def run(args, ctx):
 
     truncated = len(hits) >= max_results or scanned >= 4000
     out = {"query": query, "case_sensitive": cs, "matches": hits, "scanned": scanned, "truncated": truncated}
+    if skipped_oversized:
+        out["skipped_oversized"] = skipped_oversized
+        out.setdefault("note", "some files exceeded the size cap and were NOT searched — read them in ranges with read_file offset+limit")
     if truncated:
         out["note"] = "results truncated — narrow with a more specific query, a 'path' to one file/subdir, or raise 'max_results'"
     return out

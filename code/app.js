@@ -176,6 +176,7 @@
   // errors) and user-Stop (AbortError) are NEVER retried. Shared by runStream() and agentStreamTurn().
   const TRANSIENT_TRIES = C.transientRetries != null ? C.transientRetries : 3;
   const GPU_STATE_TRIES = C.gpuStateRetries != null ? C.gpuStateRetries : 6;   // GPU state resets recover slowly -> more, patient attempts
+  const AGENT_MAX_TURNS = Math.max(2, C.agentMaxTurns || 25);                  // one place for the run's turn cap (loop, notices, overflow check)
   function isTransientErr(status, txt) {
     return status >= 500 || status === 429 || /state reset|prefill|backend/i.test(txt || "");
   }
@@ -517,6 +518,15 @@
   // ds4's KV-prefix reuse, forcing a full (and on a weak box, very slow) re-prefill every turn. Resetting first keeps
   // the conversation append-only between resets, so ds4 reuses the prefix and prefills only the new tokens. Capable
   // boxes (fast CUDA, big ctx) keep the higher default — there a trim's re-prefill is cheap, so we let context grow.
+  // Wrap-up thresholds, always ordered warn < danger < force-clear. The configured values are
+  // ceilings; on a constrained box (forceClearPct 0.80) they clamp down so the two-stage wrap-up
+  // (persist handoff WITH tools -> tool-less summary) actually gets its window.
+  function nudgeThresholds() {
+    const force = forceClearPct();
+    const warn = Math.min(C.contextWarnPct || 0.80, force - 0.12);
+    const danger = Math.min(C.contextDangerPct || 0.92, force - 0.05);
+    return { warn: warn, danger: danger };
+  }
   function forceClearPct() {
     const base = C.contextForceClearPct || 0.90;
     const be = String(serverBackend || "").toLowerCase();
@@ -562,7 +572,7 @@
     const ctx = currentCtx(), pre = live ? "~" : "";
     if (!ctx) { txt.textContent = pre + fmtTok(used) + " tok"; fill.style.width = "0%"; note.textContent = "ctx unknown — set serverCtx in config.js"; return; }
     const pct = Math.min(100, used / ctx * 100);
-    const warn = (C.contextWarnPct || 0.8) * 100, danger = (C.contextDangerPct || 0.92) * 100;
+    const th = nudgeThresholds(), warn = th.warn * 100, danger = th.danger * 100;
     txt.textContent = pre + fmtTok(used) + " / " + fmtTok(ctx) + " · " + Math.round(pct) + "%";
     fill.style.width = pct + "%";
     fill.className = "bar__fill " + (pct >= danger ? "bar__fill--danger" : pct >= warn ? "bar__fill--warn" : "bar__fill--accent");
@@ -615,7 +625,7 @@
     if (!s || s.length <= keepChars) return s;
     const head = Math.ceil(keepChars * 0.6), tail = Math.max(0, keepChars - head);
     const cut = s.length - head - tail;
-    return s.slice(0, head) + NL2 + "... [" + cut + " chars trimmed to fit the context window - re-read this file/range with read_file offset+limit to restore detail] ..." + NL2 + (tail ? s.slice(s.length - tail) : "");
+    return s.slice(0, head) + NL2 + "... [" + cut + " chars trimmed to fit the context window - re-fetch just the part you need: read_file offset+limit for files; for command output, re-run with a filter (grep/head)] ..." + NL2 + (tail ? s.slice(s.length - tail) : "");
   }
   // Stub the bulk fields (content/find/replace) of a write/edit tool-call's ARGS to `cap`, keeping VALID JSON.
   // Re-stringifies ONLY if something was actually trimmed, so untouched args keep their exact bytes (stable KV
@@ -698,8 +708,8 @@
   }
   function maybeNudge() {
     const ctx = currentCtx(); if (!ctx) return;
-    const used = sumTok(agentMsgs) + tokFromChars(AGENT_SYSTEM.length) + tokFromChars(toolsChars());   // match the force-clear accounting (learned chars/tok + tool-schema bytes) so wrap-up notices don't fire late
-    const pct = used / ctx, warn = C.contextWarnPct || 0.8, danger = C.contextDangerPct || 0.92;
+    const used = sumTok(agentMsgs) + tokFromChars(agentSysChars()) + tokFromChars(toolsChars());   // match the force-clear accounting (learned chars/tok + tool-schema bytes) so wrap-up notices don't fire late
+    const th = nudgeThresholds(), pct = used / ctx, warn = th.warn, danger = th.danger;
     if (pct >= danger && nudgeState < 2) {
       nudgeState = 2;
       // Tools are still available at this stage — this is the model's LAST chance to persist durable state (the
@@ -1003,6 +1013,7 @@
   const isMutating = (name) => !!(AG.MUTATING || {})[name];   // tools that need approval in Ask mode — set live by AG.load()
   const riskOf     = (name) => (AG.RISK || {})[name] || "low"; // per-tool risk from spec.json (default "low")
   const isHighRisk = (name) => riskOf(name) === "high";        // high-risk -> ⚠ label + approval in Ask mode (Auto runs autonomously)
+  function agentSysChars() { return AGENT_SYSTEM.length + commandsNote().length; }   // the system msg we actually SEND (accounting must match)
   function commandsNote() {                                     // tell the model which project commands run_command can run
     const cs = AG.COMMANDS || [];
     if (!cs.length) return "";
@@ -1161,8 +1172,8 @@
     let res, level = 0, tries = 0;
     for (;;) {
       const toolsChrs = opts.noTools ? 0 : toolsChars();   // a forced summary turn sends NO tools -> all budget goes to the reply
-      sentMsgs = fitForSend(AGENT_SYSTEM, agentMsgs, { level: level, protectFirst: true, extraTok: tokFromChars(toolsChrs) });   // trim to fit --ctx (reserve the tool-schema tokens)
-      const mtA = maxTokensFor(sumTok(sentMsgs) + tokFromChars(AGENT_SYSTEM.length) + tokFromChars(toolsChrs));
+      sentMsgs = fitForSend(AGENT_SYSTEM + commandsNote(), agentMsgs, { level: level, protectFirst: true, extraTok: tokFromChars(toolsChrs) });   // trim to fit --ctx (reserve the tool-schema tokens)
+      const mtA = maxTokensFor(sumTok(sentMsgs) + tokFromChars(agentSysChars()) + tokFromChars(toolsChrs));
       try {
         res = await fetch(C.serverUrl + "/v1/chat/completions", {
           method: "POST", headers: { "Content-Type": "application/json" }, signal: ac.signal,
@@ -1222,7 +1233,7 @@
     const tEnd = performance.now();
     ui.finalize(content);
     const usedTok = finalizeTurnMetrics({ t0, tFirst, tEnd, usage, outTokEst: outTok, estPrompt });
-    if (usage && usage.prompt_tokens) calibrateTokenizer(AGENT_SYSTEM.length + toolsChars() + charsOf(sentMsgs), usage.prompt_tokens);   // learn real chars/token (incl. system + tools)
+    if (usage && usage.prompt_tokens) calibrateTokenizer(agentSysChars() + toolsChars() + charsOf(sentMsgs), usage.prompt_tokens);   // learn real chars/token (incl. system + tools)
     if (finishReason === "length") noticeTruncation(ui, usedTok);
     if (content) {
       const decSecs = (tEnd - (tFirst == null ? tEnd : tFirst)) / 1000;
@@ -1292,16 +1303,16 @@
     let finishRequested = false, finishSummary = "", dangerTurns = 0;   // model-driven finish_run + the force-clear safety net
     try {
       let guard = 0;
-      while (guard++ < 25) {
+      while (guard++ < AGENT_MAX_TURNS) {
         if (ac.signal.aborted) break;                 // Stop pressed
         maybeNudge();                                 // enqueue a wrap-up notice if the context is filling
-        if (guard === (C.turnWarnAt || 21))           // near the 25-turn cap: last turns WITH tools — persist state now
-          injectAgentMessage("[automatic notice] You are on turn " + guard + " of 25 for this run. Wrap up: if this project keeps a handoff/progress file, update it NOW with what's done and what remains (the final turn runs without tools), then finish or call finish_run.");
+        if (guard === Math.min(C.turnWarnAt || (AGENT_MAX_TURNS - 4), AGENT_MAX_TURNS - 1))   // near the cap: last turns WITH tools — persist state now
+          injectAgentMessage("[automatic notice] You are on turn " + guard + " of " + AGENT_MAX_TURNS + " for this run. Wrap up: if this project keeps a handoff/progress file, update it NOW with what's done and what remains (the final turn runs without tools), then finish or call finish_run.");
         drainPending();                               // deliver queued out-of-band messages at this turn boundary
         if (looping) {                                // SAFETY NET: never let Loop pin context full if the model won't finish_run
           const ctx = currentCtx();
           if (ctx) {
-            const pct = (sumTok(agentMsgs) + tokFromChars(AGENT_SYSTEM.length) + tokFromChars(toolsChars())) / ctx;
+            const pct = (sumTok(agentMsgs) + tokFromChars(agentSysChars()) + tokFromChars(toolsChars())) / ctx;
             dangerTurns = nudgeState >= 2 ? dangerTurns + 1 : 0;
             if (pct >= forceClearPct() || (nudgeState >= 2 && dangerTurns >= (C.contextForceClearTurns || 2))) {
               // The model won't stop on its own (it rationalizes "one more check"), so TAKE ITS TOOLS AWAY for one
@@ -1354,8 +1365,8 @@
       // silently (a Loop would otherwise restart on top of the full history and look like a hang). Surface it and
       // capture a tool-less handoff summary, exactly like the context-full path, so finally's applyFinish seeds the
       // next run cleanly. guard === 26 here only when the while condition (not a break) ended the loop.
-      if (guard > 25 && !finishRequested && !ac.signal.aborted && agentRunId === myRun) {
-        injectAgentMessage("[automatic notice] Reached the 25-turn limit for this run. Do NOT call any tools. Reply now with a concise handoff: what you changed (key files/decisions) and what still remains.");
+      if (guard > AGENT_MAX_TURNS && !finishRequested && !ac.signal.aborted && agentRunId === myRun) {
+        injectAgentMessage("[automatic notice] Reached the " + AGENT_MAX_TURNS + "-turn limit for this run. Do NOT call any tools. Reply now with a concise handoff: what you changed (key files/decisions) and what still remains.");
         drainPending();
         let wrap = { content: "", toolCalls: [] };
         try { wrap = await streamTurnWithReplay(ac, { noTools: true }); } catch (e) { /* keep going with an empty summary */ }
@@ -1363,7 +1374,7 @@
           const sum = stripDsml(wrap.content);       // forced tool-less turns can leak raw DSML — never seed it forward
           if (sum) agentMsgs.push({ role: "assistant", content: sum });
           finishRequested = true;
-          finishSummary = sum || "[auto-summary] Hit the 25-turn limit before finishing; re-assess from the instructions and continue.";
+          finishSummary = sum || "[auto-summary] Hit the turn limit before finishing; re-assess from the instructions and continue.";
         }
       }
     } catch (e) {

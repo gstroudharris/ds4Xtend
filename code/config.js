@@ -41,6 +41,12 @@ window.DS4X_CONFIG = {
   transientRetries: 3,          // max retries per turn on a transient backend failure (0 disables)
   transientBackoffMs: 400,      // base backoff; doubles each retry (400 → 800 → 1600 …)
   transientBackoffCapMs: 2000,  // ceiling on a single backoff wait
+  // GPU STATE failures (ROCm "prefill state reset failed", OOM, HIP/device errors) get a separate,
+  // patient schedule — the GPU needs seconds to recover, so fast retries just re-hit the wedged state.
+  gpuStateRetries: 6,           // attempts for GPU-state errors (bigger budget than plain 5xx)
+  gpuBackoffMs: 2000,           // base cooldown; doubles each retry (2s -> 4s -> 8s ...)
+  gpuBackoffCapMs: 12000,       // ceiling on a single GPU-recovery wait
+  agentMaxTurns: 25,            // turn cap per agent run (the turn-warning notice fires ~4 turns before it)
 
   // Thinking mode. The switch has 3 positions: "on" (always think), "off" (never), "auto" (a local heuristic
   // skips thinking on trivial turns — the headline feature). Auto is BALANCED + biased to think, because

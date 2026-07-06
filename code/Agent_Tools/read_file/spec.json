@@ -1,15 +1,26 @@
 {
   "function": {
     "name": "read_file",
-    "description": "Read a text file, optionally a 0-based line range via offset+limit.",
+    "description": "Read a text file, optionally a 0-based line range via offset+limit. Files over 2 MB require offset+limit (they are streamed in ranges rather than loaded whole).",
     "parameters": {
       "type": "object",
       "properties": {
-        "path": { "type": "string", "description": "File path relative to the workspace root." },
-        "offset": { "type": "integer", "description": "0-based first line to return (optional)." },
-        "limit": { "type": "integer", "description": "Max lines to return from offset (optional)." }
+        "path": {
+          "type": "string",
+          "description": "File path relative to the workspace root."
+        },
+        "offset": {
+          "type": "integer",
+          "description": "0-based first line to return (optional)."
+        },
+        "limit": {
+          "type": "integer",
+          "description": "Max lines to return from offset (optional)."
+        }
       },
-      "required": ["path"]
+      "required": [
+        "path"
+      ]
     }
   },
   "mutating": false
