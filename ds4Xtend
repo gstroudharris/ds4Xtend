@@ -10,7 +10,7 @@
 #   2. "Installs" / readies the metrics sidecar (it ships next to this script).
 #   3. Checks the ports it needs; if a stale ds4 process is holding one, offers to close it (Y/n).
 #      Then launches ds4-server (RAM-optimized) and waits until it's online.
-#   4. Starts the sidecar + agent-tools (sandboxed file I/O) + the static frontend, then opens
+#   4. Starts the sidecar + agent-tools (Agent mode's file and command tools) + the static frontend, then opens
 #      the dashboard in your browser (only if a dashboard tab isn't already open).
 #   5. Streams ds4 + frontend debug output live.
 #   6. On Ctrl+C, stops everything it started, announcing each one.
@@ -166,7 +166,7 @@ preflight_ports() {  # args: "port:label" ...
 # rising hit count means one is up — works on Wayland and X11). We launch it in a window we own
 # (Chrome --app, else a separate Firefox instance) so teardown can close just the dashboard.
 open_dashboard() {
-  local url="http://localhost:$WEB_PORT"
+  local url="$DASH_URL"                       # carries the agent token in the fragment, which browsers don't send to servers
   if [ "${DS4_NO_BROWSER:-0}" = "1" ]; then ok "browser auto-open off (DS4_NO_BROWSER=1) — visit $url"; return; fi
   if [ -z "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]; then warn "no display — open $url in a browser"; return; fi
   local hits='import sys,json; print(json.load(sys.stdin).get("metrics_hits",0))'
@@ -385,6 +385,18 @@ fi
 
 # ---------- 4. sidecar + frontend ----------
 say "4. starting sidecar (:$SIDE_PORT) and frontend (:$WEB_PORT)"
+# Both services accept only the dashboard's address. The agent service also needs this token, kept in a private
+# file so an open dashboard tab keeps working across restarts. It reaches the service through the environment, not
+# argv, and agent_tools.py leaves it out of the commands it runs.
+ALLOW_ORIGINS=(--allow-origin "http://localhost:$WEB_PORT" --allow-origin "http://127.0.0.1:$WEB_PORT")
+AGENT_TOKEN_FILE="$CONFIG_DIR/agent-token"
+if [ ! -s "$AGENT_TOKEN_FILE" ]; then
+  mkdir -p "$CONFIG_DIR"
+  ( umask 077; python3 -c 'import secrets; print(secrets.token_urlsafe(32))' > "$AGENT_TOKEN_FILE" )
+fi
+chmod 600 "$AGENT_TOKEN_FILE" 2>/dev/null || true
+AGENT_TOKEN="$(cat "$AGENT_TOKEN_FILE")"
+DASH_URL="http://localhost:$WEB_PORT/#agent-token=$AGENT_TOKEN"
 SIDE_LOG="$RUN_DIR/sidecar.log"
 mkdir -p "$FRONTEND_DIR/logs"
 # Resolve the ctx to report to the UI's headroom meter + context-nudge safety net (which goes dormant
@@ -399,7 +411,7 @@ if [ "$USE_SCRIPT" = "1" ]; then
 else
   SIDE_CTX="$SERVER_CTX"
 fi
-( exec python3 "$SIDECAR" --port "$SIDE_PORT" --model "$MODEL" --backend "$DS4_BACKEND" --ctx "$SIDE_CTX" --logs-dir "$FRONTEND_DIR/logs" --state-file "$FRONTEND_DIR/lastsession.json" ) > "$SIDE_LOG" 2>&1 &
+( exec python3 "$SIDECAR" --port "$SIDE_PORT" --model "$MODEL" --backend "$DS4_BACKEND" --ctx "$SIDE_CTX" --logs-dir "$FRONTEND_DIR/logs" --state-file "$FRONTEND_DIR/lastsession.json" "${ALLOW_ORIGINS[@]}" ) > "$SIDE_LOG" 2>&1 &
 register "metrics-sidecar" "$!"
 printf '    sidecar '; wait_http "http://127.0.0.1:$SIDE_PORT/healthz" 10 && { printf '\n'; ok "sidecar online (model gauge → $(basename "$MODEL"))"; } || { printf '\n'; warn "sidecar slow/own port busy"; }
 
@@ -453,10 +465,10 @@ if [ -f "$AGENT_REQ" ]; then
   fi
 fi
 [ -x "$AGENT_PY" ] || AGENT_PY="python3"   # no usable venv -> plain python3 (web tools return an actionable install hint)
-( exec "$AGENT_PY" "$CODE_DIR/Agent_Tools/agent_tools.py" --port "$AGENT_PORT" ) > "$AGENT_LOG" 2>&1 &
+( export DS4_AGENT_TOKEN="$AGENT_TOKEN"; exec "$AGENT_PY" "$CODE_DIR/Agent_Tools/agent_tools.py" --port "$AGENT_PORT" "${ALLOW_ORIGINS[@]}" ) > "$AGENT_LOG" 2>&1 &
 register "agent-tools" "$!"
 printf '    agent-tools '
-if wait_http "http://127.0.0.1:$AGENT_PORT/healthz" 10; then echo; ok "agent-tools online (sandboxed file I/O for Agent mode)"; else echo; warn "agent-tools slow/own port busy"; fi
+if wait_http "http://127.0.0.1:$AGENT_PORT/healthz" 10; then echo; ok "agent-tools online (Agent mode's file and command tools)"; else echo; warn "agent-tools slow/own port busy"; fi
 
 WEB_LOG="$RUN_DIR/frontend.log"
 ( cd "$CODE_DIR" && exec python3 "$CODE_DIR/serve.py" --port "$WEB_PORT" ) > "$WEB_LOG" 2>&1 &
@@ -468,7 +480,7 @@ open_dashboard
 
 # ---------- 5. stream logs ----------
 say "5. up and running"
-printf '    %sOpen:%s  %shttp://localhost:%s%s\n' "$B" "$RST" "$CYN" "$WEB_PORT" "$RST"
+printf '    %sOpen:%s  %s%s%s\n' "$B" "$RST" "$CYN" "$DASH_URL" "$RST"
 printf '    Live logs below (%s[ds4-server.log]%s / %s[sidecar.log]%s / %s[frontend.log]%s).  %sPress Ctrl+C to stop everything.%s\n\n' \
   "$CYN" "$RST" "$DIM" "$RST" "$GRN" "$RST" "$B" "$RST"
 tail -n +1 -F "$SERVER_LOG" "$SIDE_LOG" "$AGENT_LOG" "$WEB_LOG" & TAIL_PID=$!

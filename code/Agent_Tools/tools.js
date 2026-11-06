@@ -3,7 +3,7 @@
 // ds4Xtend agent tool CONTRACT — the agent system prompt + a thin loader that fetches the model-facing tool
 // catalog from the backend registry at runtime. Kept here (out of app.js) for clarity. Loaded before app.js.
 //   app.js consumes   window.DS4X_AGENT   (calls .load(agentUrl) once, then reads .TOOLS/.ENDPOINTS/.MUTATING)
-//   the backend that REGISTERS + EXECUTES the tools is   ./agent_tools.py   (sandboxed file I/O on :8082)
+//   the backend that REGISTERS + EXECUTES the tools is   ./agent_tools.py   (on :8082)
 //   each tool is a folder (spec.json + tool.py); the backend auto-discovers them and serves the catalog at
 //   GET /tools, so adding a tool needs NO change here — to add one, follow   ./TOOL_TEMPLATE.md
 window.DS4X_AGENT = {
@@ -72,13 +72,39 @@ window.DS4X_AGENT = {
   COMMANDS: [],         // [{name, description}] from the workspace's .ds4/commands.json (what run_command can run)
   loaded: false,
 
+  // Session token for the agent-tools service. The launcher opens the dashboard with #agent-token=... (a URL
+  // fragment never reaches a server). It's stored outside the "ds4x:" prefix so saveState() never copies it to
+  // the sidecar's state file, and it's taken out of the address bar so it stays out of history and shared links.
+  TOKEN_KEY: "ds4x-agent-token",
+  token: "",
+  onUnauthorized: null,         // app.js: tells the user how to get the link (called once)
+  adoptToken() {
+    let saved = "";
+    try { saved = localStorage.getItem(this.TOKEN_KEY) || ""; } catch (e) {}
+    const m = /(?:^#|&)agent-token=([\w-]+)/.exec(location.hash);
+    if (m) {
+      saved = m[1];
+      try { localStorage.setItem(this.TOKEN_KEY, saved); } catch (e) {}
+      history.replaceState(null, "", location.pathname + location.search);
+    }
+    this.token = saved;
+  },
+  // Every call to the agent-tools service goes through here, so the token is never forgotten.
+  async request(base, path, opts) {
+    const o = Object.assign({}, opts);
+    o.headers = Object.assign({}, o.headers, { "X-DS4-Token": this.token });
+    const r = await fetch(String(base || "").replace(/\/+$/, "") + path, o);
+    if (r.status === 401 && this.onUnauthorized) { const tell = this.onUnauthorized; this.onUnauthorized = null; tell(); }
+    return r;
+  },
+
   // Fetch the live tool contract from the backend registry. The backend (agent_tools.py) auto-discovers
   // each tool folder, so it is the single source of truth: a tool added there shows up here with no edit.
   // Fetched once and cached (the registry is fixed at backend startup); call load(url, true) to force a refresh.
   async load(agentUrl, force) {
     if (this.loaded && !force) return this.TOOLS;
     const base = String(agentUrl || "").replace(/\/+$/, "");
-    const r = await fetch(base + "/tools", { cache: "no-store" });
+    const r = await this.request(base, "/tools", { cache: "no-store" });
     if (!r.ok) throw new Error("GET /tools -> " + r.status);
     const p = await r.json();
     const tools = Array.isArray(p.tools) ? p.tools : [];
@@ -98,3 +124,5 @@ window.DS4X_AGENT = {
     return this.TOOLS;
   },
 };
+window.DS4X_AGENT.adoptToken();
+window.addEventListener("hashchange", () => window.DS4X_AGENT.adoptToken());   // the link pasted into an already-open tab

@@ -1,17 +1,24 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 Grant Harris
-"""ds4 agent tools — sandboxed filesystem executor for the dashboard's Agent mode.
+"""ds4 agent tools — workspace-locked file tools and command execution for the dashboard's Agent mode.
 
 The browser can't touch the filesystem, so the web agent loop calls THIS localhost-only
 service to run its file tools. THE LOCK: every path is confined to a chosen workspace
 folder — paths are resolved with realpath() and rejected unless they stay inside
-realpath(workspace), which defeats '..' traversal AND symlink escapes. File I/O is fully
-sandboxed this way. Command execution (the `execute` / `run_command` tools) runs a real
+realpath(workspace), which defeats '..' traversal AND symlink escapes. That lock covers file
+I/O only. Command execution (the `execute` / `run_command` tools) runs a real
 subprocess with cwd confined to the workspace, a hard timeout, an output cap and a scrubbed
 env — but a subprocess can still reach the wider machine, so `execute` is marked high-risk: the UI
 gates it behind human approval in ASK mode, while AUTO mode runs the agent autonomously (no approvals).
 Stdlib only; binds 127.0.0.1.
+
+WHO MAY CALL. Binding to localhost doesn't stop web pages, because any site open in the browser can send
+requests here. So every request passes _local_guard (Host and Origin checks) and must carry the session token
+in X-DS4-Token; only /healthz works without it. Tools that change things (mutating or high-risk) also need a
+single-use ticket from POST /approvals, tied to the exact arguments. The dashboard requests one after its Ask
+or Auto check, so a code path that skips that check fails closed. A ticket can't prove a person clicked, because
+the same client requests it; the token and Origin checks are what keep outsiders out.
 
 Tools are a REGISTRY: each tool is a sibling folder holding `spec.json` (the model-facing
 function definition + a "mutating" flag) and `tool.py` (exposing `run(args, ctx)`). They are
@@ -21,17 +28,20 @@ at POST /tools/<name>. To add a tool, drop a folder and restart — see TOOL_TEM
 call it.)
 
 Endpoints
-  GET  /healthz                 -> {ok, workspace}
+  GET  /healthz                 -> {ok}, plus workspace when the token is valid (no token needed)
   GET  /workspace               -> {root}
   POST /workspace   {path}      -> lock to a folder (must be an existing dir)
   GET  /browse?path=ABS         -> list sub-dirs of ABS (folder picker; read-only, dirs only)
   GET  /tools                   -> {tools:[...defs], mutating:[...], risk:{...}, commands:[...]} (the registry)
-  POST /tools/<name> {...args}  -> run a registered tool (sandboxed)
+  POST /approvals {tool, args}  -> {ticket}, single-use approval for exactly these arguments
+  POST /tools/<name> {...args}  -> run a registered tool (mutating or high-risk tools need X-DS4-Approval)
   POST /tools/tree   {path}     -> file tree for the UI (built-in; not a model tool)
 """
-import argparse, atexit, importlib.util, json, os, signal, subprocess, tempfile, threading, time, types
+import argparse, atexit, hashlib, hmac, importlib.util, json, os, secrets, signal, subprocess, sys, tempfile, threading, time, types
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import _jobs
+sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))   # code/, for the shared guard
+from _local_guard import DEFAULT_WEB_PORT, Guard, default_origins
 
 _lock = threading.Lock()
 _ws = {"root": None}                 # locked workspace root (absolute realpath) or None
@@ -45,7 +55,7 @@ EXEC_MAX_OUTPUT = 64 * 1024          # cap on captured stdout AND stderr each (b
 ENV_KEEP = ("PATH", "HOME", "LANG", "LC_ALL", "LC_CTYPE", "TERM", "USER", "SHELL", "TMPDIR")  # scrubbed env allowlist
 
 
-# ---------------- workspace + the sandbox boundary ----------------
+# ---------------- workspace + the file-path lock ----------------
 def set_workspace(path):
     if not path or not str(path).strip():
         raise ValueError("empty path")
@@ -290,11 +300,57 @@ def browse(path):
 
 
 # ---------------- HTTP ----------------
+# ---------------- who may call: request guard + approval tickets ----------------
+GUARD = Guard(8082, token=secrets.token_urlsafe(32))   # strict from import onward; main() sets the real port, origins and token
+APPROVAL_TTL_SEC = 300               # long enough for the frontend's call right after the Ask/Auto check, not a standing pass
+_approvals = {}                      # ticket -> (digest of tool + args, monotonic expiry)
+
+
+def needs_approval(tool):
+    return bool(tool["mutating"]) or tool.get("risk") == "high"
+
+
+def _approval_digest(name, args):
+    return hashlib.sha256(json.dumps([name, args], sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
+def issue_approval(name, args):
+    ticket = secrets.token_urlsafe(24)
+    with _lock:
+        now = time.monotonic()
+        for old in [t for t, (_, expiry) in _approvals.items() if expiry <= now]:
+            del _approvals[old]
+        _approvals[ticket] = (_approval_digest(name, args), now + APPROVAL_TTL_SEC)
+    return ticket
+
+
+def consume_approval(ticket, name, args):
+    """Single-use: any attempt spends the ticket, so a try with the wrong arguments can't be followed by another."""
+    with _lock:
+        entry = _approvals.pop(ticket or "", None)
+    return bool(entry) and entry[1] > time.monotonic() and hmac.compare_digest(entry[0], _approval_digest(name, args))
+
+
 class Handler(BaseHTTPRequestHandler):
     def _cors(self):
-        self.send_header("Access-Control-Allow-Origin", "*")
+        origin = GUARD.cors_origin(self.headers)
+        if not origin:
+            return                    # no wildcard: other origins get no CORS headers, so browsers hide the response
+        self.send_header("Access-Control-Allow-Origin", origin)
+        self.send_header("Vary", "Origin")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type, X-DS4-Run-Id")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type, X-DS4-Run-Id, X-DS4-Token, X-DS4-Approval")
+
+    def _refused(self, need_token=True):
+        """Send the refusal and return True if this request may not proceed."""
+        why = GUARD.deny_reason(self.headers)
+        if why:
+            self._json({"error": why, "kind": "forbidden"}, 403)
+            return True
+        if need_token and not GUARD.has_token(self.headers):
+            self._json({"error": "missing or wrong agent token: open the link the ds4Xtend launcher printed", "kind": "unauthorized"}, 401)
+            return True
+        return False
 
     def handle(self):
         try:
@@ -324,13 +380,19 @@ class Handler(BaseHTTPRequestHandler):
             return {}
 
     def do_OPTIONS(self):
+        if self._refused(need_token=False):
+            return
         self.send_response(204); self._cors(); self.end_headers()
 
     def do_GET(self):
         from urllib.parse import urlparse, parse_qs
         u = urlparse(self.path)
-        if u.path == "/healthz":
-            return self._json({"ok": True, "workspace": workspace()})
+        if u.path == "/healthz":                           # the launcher polls this with curl, so no token needed
+            if self._refused(need_token=False):
+                return
+            return self._json({"ok": True, "workspace": workspace()} if GUARD.has_token(self.headers) else {"ok": True})
+        if self._refused():
+            return
         if u.path == "/workspace":
             return self._json({"root": workspace()})
         if u.path == "/tools":
@@ -343,11 +405,18 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         from urllib.parse import urlparse
         path = urlparse(self.path).path
+        if self._refused():
+            return
         b = self._body()
         _req.run_id = self.headers.get("X-DS4-Run-Id") or None    # tag spawned jobs with the owning agent run
         try:
             if path == "/workspace":
                 return self._json({"root": set_workspace(b.get("path"))})
+            if path == "/approvals":                        # the dashboard asks once its Ask/Auto check has passed
+                name = b.get("tool")
+                if name not in REGISTRY:
+                    return self._json({"error": "unknown tool: %s" % name}, 404)
+                return self._json({"ticket": issue_approval(name, b.get("args") or {})})
             if path == "/jobs/cleanup":                     # frontend: reap a run's background processes at run end
                 return self._json(CTX.jobs.cleanup_run(b.get("run_id")) if CTX.jobs else {"reaped": []})
             if path == "/tools/tree":                       # built-in UI endpoint (not a model tool)
@@ -357,6 +426,8 @@ class Handler(BaseHTTPRequestHandler):
                 tool = REGISTRY.get(name)
                 if not tool:
                     return self._json({"error": "unknown tool: %s" % name}, 404)
+                if needs_approval(tool) and not consume_approval(self.headers.get("X-DS4-Approval"), name, b):
+                    return self._json({"error": "%s needs an approval ticket" % name, "kind": "approval_required"}, 403)
                 if tool["validate"]:                         # optional hard-constraint check (raises ValueError -> 400)
                     tool["validate"](b)
                 return self._json(tool["run"](b, CTX))
@@ -375,11 +446,18 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main():
+    global GUARD
     ap = argparse.ArgumentParser()
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=8082)
     ap.add_argument("--workspace", default="", help="optional initial locked folder")
+    ap.add_argument("--allow-origin", action="append", default=[],
+                    help="dashboard address allowed to call this service, repeatable (default: localhost and 127.0.0.1 on port %d)" % DEFAULT_WEB_PORT)
     args = ap.parse_args()
+    token = os.environ.get("DS4_AGENT_TOKEN") or secrets.token_urlsafe(32)
+    GUARD = Guard(args.port, args.allow_origin or default_origins(), token, args.host)
+    if not os.environ.get("DS4_AGENT_TOKEN"):           # started by hand; the launcher normally supplies the token
+        print("agent-tools: no DS4_AGENT_TOKEN set. Open the dashboard once at http://localhost:%d/#agent-token=%s" % (DEFAULT_WEB_PORT, token), flush=True)
     if args.workspace:
         try:
             set_workspace(args.workspace)

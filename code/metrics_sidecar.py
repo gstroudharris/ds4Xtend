@@ -12,12 +12,13 @@ Serves GPU + RAM + disk + model-residency telemetry as JSON so the browser SPA
 
 Vendor-agnostic: GPU stats come from `nvidia-smi` (NVIDIA) or `rocm-smi` (AMD),
 whichever is present — so a clone on an AMD box renders correctly with no edits.
-Binds 127.0.0.1 by default; permissive CORS so the SPA (different origin) can
-fetch it. The model-residency ("model warm") figure uses mincore(2) over the
+Binds 127.0.0.1 by default. Only the dashboard's address gets CORS access (see
+_local_guard), because /state holds saved conversations. The model-residency ("model warm") figure uses mincore(2) over the
 mmap'd GGUF; refreshed on a slow cadence because it scans ~21M page flags.
 """
 import argparse, ctypes, ctypes.util, json, mmap, os, re, subprocess, threading, time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from _local_guard import Guard, default_origins
 
 PAGE = os.sysconf("SC_PAGE_SIZE")
 _libc = ctypes.CDLL(ctypes.util.find_library("c") or "libc.so.6", use_errno=True)
@@ -202,11 +203,23 @@ class Handler(BaseHTTPRequestHandler):
     ctx = None
     logs_dir = None
     state_file = None
+    guard = Guard(8081)         # strict from import onward; main() sets the real port and origins
 
     def _cors(self):
-        self.send_header("Access-Control-Allow-Origin", "*")
+        origin = self.guard.cors_origin(self.headers)
+        if not origin:
+            return              # no wildcard: other origins get no CORS headers, so browsers hide the response
+        self.send_header("Access-Control-Allow-Origin", origin)
+        self.send_header("Vary", "Origin")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "Content-Type")
+
+    def _refused(self):
+        """Send the refusal and return True if this request isn't from the dashboard or a local client."""
+        why = self.guard.deny_reason(self.headers)
+        if why:
+            self._json({"error": why, "kind": "forbidden"}, 403)
+        return bool(why)
 
     def handle(self):
         try:
@@ -239,9 +252,13 @@ class Handler(BaseHTTPRequestHandler):
             return {}
 
     def do_OPTIONS(self):
+        if self._refused():
+            return
         self.send_response(204); self._cors(); self.end_headers()
 
     def do_GET(self):
+        if self._refused():
+            return
         if self.path.startswith("/healthz"):
             return self._json({"ok": True, "metrics_hits": _state["metrics_hits"]})
         if self.path.startswith("/state"):
@@ -271,6 +288,8 @@ class Handler(BaseHTTPRequestHandler):
         self._json({"error": "not found"}, 404)
 
     def do_POST(self):
+        if self._refused():
+            return
         if self.path.startswith("/state"):
             return self._save_state(self._body())
         if self.path.startswith("/log"):
@@ -349,7 +368,11 @@ def main():
                     help="directory for POST /log conversation logs (default: <repo>/logs)")
     ap.add_argument("--state-file", default=os.environ.get("DS4_STATE_FILE", ""),
                     help="file for GET/POST /state (UI resume across runs; default: <repo>/lastsession.json)")
+    ap.add_argument("--allow-origin", action="append", default=[],
+                    help="dashboard address allowed to call this service, repeatable (default: localhost and 127.0.0.1 on port 8090)")
     args = ap.parse_args()
+
+    Handler.guard = Guard(args.port, args.allow_origin or default_origins(), host=args.host)
 
     Handler.model_path = os.path.realpath(args.model) if os.path.exists(args.model) else None
     Handler.enable_warm = args.enable_warm

@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Grant Harris
 /* ============================================================
    ds4Xtend — app logic
-   Phase 1: shell/theme · 2: chat streaming · 3: telemetry · 4: agent (sandboxed file tools)
+   Phase 1: shell/theme · 2: chat streaming · 3: telemetry · 4: agent (workspace-locked tools)
    ============================================================ */
 (() => {
   "use strict";
@@ -762,9 +762,11 @@
     clearTimeout(toastTimer); toastTimer = setTimeout(() => el.classList.remove("is-show"), 2800);
   }
 
-  /* ================= Agent mode (sandboxed file tools) ================= */
+  /* ================= Agent mode (workspace-locked tools) ================= */
   const AG = window.DS4X_AGENT || {};                          // agent tool contract — Agent_Tools/tools.js
   const AGENT_SYSTEM = AG.SYSTEM || "";
+  const agentFetch = (path, opts) => AG.request(C.agentUrl, path, opts);   // adds the session token (Agent_Tools/tools.js)
+  AG.onUnauthorized = () => toast("Agent tools need this machine's link. Open the address the ds4Xtend launcher printed.");
   // The tool catalog is fetched live from the backend registry by AG.load() (called in runAgent), so read
   // it through these helpers — capturing AG.TOOLS at boot would freeze an empty list before load() runs.
   const toolDefs  = () => AG.TOOLS || [];                     // function defs sent to ds4 each turn
@@ -782,7 +784,8 @@
   async function browseTo(path) {
     pickerList.innerHTML = '<div class="picker__empty">loading…</div>';
     try {
-      const r = await fetch(C.agentUrl + "/browse?path=" + encodeURIComponent(path || ""));
+      const r = await agentFetch("/browse?path=" + encodeURIComponent(path || ""));
+      if (!r.ok) throw new Error("browse failed");
       const d = await r.json();
       pickerCwd = d.path; pickerParent = d.parent; pickerPath.textContent = d.path;
       pickerList.innerHTML = "";
@@ -803,7 +806,7 @@
   async function lockWorkspace(path) {
     if (!path) return;
     try {
-      const r = await fetch(C.agentUrl + "/workspace", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ path }) });
+      const r = await agentFetch("/workspace", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ path }) });
       const d = await r.json();
       if (!r.ok) throw new Error(d.error || "failed");
       workspace = d.root; agentWs.textContent = d.root; picker.hidden = true; try { localStorage.setItem("ds4x:workspace", d.root); } catch (e) {}
@@ -822,13 +825,14 @@
   async function syncWorkspace() {
     if (mode !== "agent" || workspace) return;
     let d = null;
-    try { d = await (await fetch(C.agentUrl + "/healthz")).json(); }
+    try { d = await (await agentFetch("/healthz")).json(); }
     catch (e) { agentWs.textContent = "agent-tools offline (:8082)"; return; }
     if (d && d.workspace) return adoptWs(d.workspace);          // backend already locked (e.g. --workspace)
     let saved = null; try { saved = localStorage.getItem("ds4x:workspace"); } catch (e) {}
     if (!saved) return;
     try {
-      const r = await fetch(C.agentUrl + "/workspace", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ path: saved }) });
+      const r = await agentFetch("/workspace", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ path: saved }) });
+      if (r.status === 401) return;                            // no session link yet: keep the saved folder (the user has been told)
       const j = await r.json();
       if (!r.ok) throw new Error(j.error || "failed");
       adoptWs(j.root);
@@ -844,7 +848,8 @@
   async function refreshTree() {
     if (!workspace) { treeList.innerHTML = '<div class="filetree__empty">lock a folder to see files</div>'; return; }
     try {
-      const r = await fetch(C.agentUrl + "/tools/tree", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ path: "" }) });
+      const r = await agentFetch("/tools/tree", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ path: "" }) });
+      if (r.status === 401) throw new Error("no session link");
       const d = await r.json();
       treeList.innerHTML = "";
       if (!d.entries || !d.entries.length) { treeList.innerHTML = '<div class="filetree__empty">(empty folder)</div>'; return; }
@@ -969,7 +974,7 @@
     };
   }
 
-  async function callTool(name, args, ac) {
+  async function callTool(name, args, ac, ticket) {
     const ep = toolEp(name);
     if (!ep) return { error: "unknown tool: " + name };
     let sendArgs = args || {};
@@ -992,7 +997,9 @@
       if (ac) { if (ac.signal.aborted) ctl.abort(); else ac.signal.addEventListener("abort", onAbort, { once: true }); }
       const timer = setTimeout(() => ctl.abort(new DOMException("timeout", "TimeoutError")), ms);
       try {
-        const r = await fetch(C.agentUrl + ep, { method: "POST", headers: { "Content-Type": "application/json", "X-DS4-Run-Id": String(agentRunId) }, body: JSON.stringify(sendArgs), signal: ctl.signal });   // tag spawned background jobs with the owning run
+        const headers = { "Content-Type": "application/json", "X-DS4-Run-Id": String(agentRunId) };
+        if (ticket) headers["X-DS4-Approval"] = ticket;
+        const r = await agentFetch(ep, { method: "POST", headers, body: JSON.stringify(sendArgs), signal: ctl.signal });   // tag spawned background jobs with the owning run
         return await r.json();
       } catch (e) {
         if (ac && ac.signal.aborted) return { error: "stopped by user" };
@@ -1057,6 +1064,12 @@
     if (name === "run_command") return { title: "Run project command: " + (args.name || ""), body: "Pre-vetted command from .ds4/commands.json" };
     return { title: name, body: JSON.stringify(args) };
   }
+  async function requestTicket(name, args) {                   // single-use backend approval for exactly these args
+    const r = await agentFetch("/approvals", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ tool: name, args: args || {} }) });
+    const d = await r.json();
+    if (!r.ok || !d.ticket) throw new Error(d.error || "HTTP " + r.status);
+    return d.ticket;
+  }
   async function execToolCall(name, args, card, ac) {
     // Approvals are gated by MODE: in Ask, mutating + high-risk tools need a human OK; in Auto the agent runs
     // autonomously — no approvals, including execute. The high-risk flag still drives the ⚠ label in Ask mode.
@@ -1067,7 +1080,12 @@
       if (!ok) { card.result({ error: "declined by user" }, "skip"); return { error: "user declined the " + name }; }
     }
     if (ac && ac.signal.aborted) { card.result({ error: "stopped by user" }, "skip"); return { error: "stopped by user" }; }   // Stop pressed during approval
-    const res = await callTool(name, args, ac);
+    let ticket = null;
+    if (isHighRisk(name) || isMutating(name)) {                // the Ask/Auto check above has passed. The backend refuses these tools without a ticket, so a path that skips this function fails closed
+      try { ticket = await requestTicket(name, args); }
+      catch (e) { const err = { error: "couldn't get an approval ticket for " + name + ": " + (e.message || e) }; card.result(err, "error"); return err; }
+    }
+    const res = await callTool(name, args, ac, ticket);
     let display = res;
     if (!(res && res.error)) {
       if (name === "mkdir") display = { content: "📁 created " + (res.path || args.path) };
@@ -1394,7 +1412,7 @@
         }
       }
     } finally {
-      fetch(C.agentUrl + "/jobs/cleanup", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ run_id: String(myRun) }) }).catch(() => {});   // reap this run's run-scoped background processes
+      agentFetch("/jobs/cleanup", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ run_id: String(myRun) }) }).catch(() => {});   // reap this run's run-scoped background processes
       if (agentRunId === myRun) {                       // not superseded by a user Clear (which bumps agentRunId)
         agentBusy = false; setSendStop(false); agentAbort = null;
         saveAgent(); logFinishTurn("agent");           // flush the just-finished conversation to the log FIRST

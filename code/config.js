@@ -6,7 +6,7 @@
 window.DS4X_CONFIG = {
   serverUrl:  "http://localhost:8080",   // ds4-server — launch with: --cors --port 8080
   sidecarUrl: "http://localhost:8081",   // metrics sidecar (added in Phase 3)
-  agentUrl:   "http://localhost:8082",   // sandboxed agent file-tools (Agent mode)
+  agentUrl:   "http://localhost:8082",   // agent tools service (Agent mode)
   pollHz: 2,                             // telemetry sample rate
 
   // Conversation logging (sidecar writes <repo>/logs) + in-memory history cap. Tune freely.

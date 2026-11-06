@@ -133,6 +133,8 @@ If you add another risky tool, follow the same four guards:
 3. **`validate(args)`** in `tool.py` → enforce the hard constraints in code (raise `ValueError` → clean 400). Defense in depth: schema **and** code, because approval is a UI control, not the only gate.
 4. **Bound execution** via `ctx.run_process` (timeout + output cap + confined cwd). True OS isolation (namespaces/seccomp/container) is beyond this stdlib sidecar — slot it into `_wrap()` when needed.
 
+**Who can call a tool.** Every request needs the session token and has to pass the Host and Origin checks in `../_local_guard.py`. A tool with `"mutating": true` or `"risk": "high"` also needs a single-use ticket from `POST /approvals`, tied to its exact arguments. The frontend requests the ticket in `execToolCall()` after the Ask/Auto check, so a new tool needs no extra work. The ticket catches code paths that skip that check. It can't prove a person approved, so it doesn't replace the four guards above.
+
 ### Project commands — `.ds4/commands.json`
 
 A workspace declares pre-vetted commands a human trusts the agent to run:

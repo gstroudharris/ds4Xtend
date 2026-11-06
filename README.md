@@ -19,12 +19,13 @@ it talks to ds4-server over HTTP, with no source dependency on ds4.
 - **Light / dark theme** (UIXtend light-acrylic · dark-glass), remembered across sessions
 - Conversation **logging** to `logs/` with an in-memory history cap
 
-**Agent mode (sandboxed)**
+**Agent mode (workspace-locked file tools)**
 - Turn any chat into an **agent loop** with a **workspace folder** you pick and lock (file-tree browser in the left rail)
 - **Ask vs Auto:** Ask shows a diff and waits before each write; Auto applies writes immediately — always inside the locked folder
-- **14 sandboxed tools** served by `agent_tools.py` (bound to `127.0.0.1`): `read_file`, `write_file`, `edit_file`,
+- **14 tools** served by `agent_tools.py` (bound to `127.0.0.1`, with token and Origin checks): `read_file`, `write_file`, `edit_file`,
   `delete`, `list_dir`, `mkdir`, `search`, `run_command`, `execute`, `list_processes`, `process_output`,
   `stop_process`, `web_search`, `web_scrape`
+- File tools can't leave the locked folder. Commands start there but aren't sandboxed; see [Security](#security)
 - **Keyless web search** (ddgs) and **clean HTML→markdown scraping** (trafilatura, SSRF-guarded)
 - Project commands from `.ds4/commands.json` surfaced to the model; tool-output sizes auto-scaled to your hardware
 - Context force-clear on long agent loops to avoid prefill thrash on slow boxes
@@ -68,7 +69,8 @@ local venv on first use. ds4Xtend launches and auto-detects ds4-server for you; 
 ```
 
 `ds4Xtend` starts ds4-server + the metrics sidecar + the web UI, streams their logs, and tears
-everything down by name on Ctrl+C. Then open http://localhost:8090.
+everything down by name on Ctrl+C. It opens the dashboard for you or prints the link to open, which
+carries the agent token (see [Security](#security)).
 
 **Manual** (three processes) if you prefer:
 
@@ -121,7 +123,7 @@ exec env DS4_CUDA_NO_DIRECT_IO=1 DS4_CUDA_KEEP_MODEL_PAGES=1 LD_LIBRARY_PATH=/us
   ./ds4-server --cuda --ssd-streaming --ctx 100000 "$@"
 ```
 
-On either box, launch the whole stack with `./ds4Xtend`, then open http://localhost:8090.
+On either box, launch the whole stack with `./ds4Xtend`, then open the link it prints.
 
 **Setting up a second machine (known gaps).** Per-box config is machine-local and never committed —
 do it once per box: the ds4 dir is remembered under `~/.config/ds4xtend/`, and any `ds4-server.sh`
@@ -146,11 +148,31 @@ diverges your clone from upstream). Ignore them locally instead, in **`ds4/.git/
 - `ds4Xtend` — one-command launcher for the whole stack (repo root)
 - `code/index.html` · `styles.css` · `app.js` — the SPA (markup / COSMIC theme / chat + telemetry)
 - `code/config.js` — server & sidecar URLs, suggestion cards
-- `code/Agent_Tools/` — Agent-mode file tools: `tools.js` (the model-facing tool contract + system prompt, consumed by app.js), `agent_tools.py` (the sandboxed executor on :8082), `TOOL_TEMPLATE.md` (how to add a tool + best practices)
+- `code/Agent_Tools/` — Agent-mode file tools: `tools.js` (the model-facing tool contract + system prompt, consumed by app.js), `agent_tools.py` (the tool service on :8082), `TOOL_TEMPLATE.md` (how to add a tool + best practices)
 - `code/metrics_sidecar.py` — GPU/RAM/disk/model-residency JSON on :8081
+- `code/_local_guard.py` — Host, Origin and token checks shared by the agent tools and sidecar
 - `code/run-frontend.sh` — sidecar + static server (not ds4-server)
 - `code/bench_thinking.py` — measures whether "Auto" thinking-mode saves time on this box (think on/off savings + the cost of switching); run against a live ds4-server, esp. on the slow box
 - `docs/LICENSING.md` — licensing guide: what GPLv3 means here, third-party components, and the SPDX header convention for new files
+
+## Security
+
+ds4Xtend is meant for one person on their own machine. The services bind to `127.0.0.1`, but that doesn't stop web pages, because any site open in your browser can send requests to localhost. So the agent tools and the metrics sidecar check every request:
+
+- **Host:** must be a loopback name and the service's port, which blocks DNS rebinding.
+- **Origin:** when present, must exactly match the dashboard's address (`http://localhost:8090` or `http://127.0.0.1:8090`, or whatever you pass with `--allow-origin`). There's no wildcard CORS on either service.
+- **Session token (agent tools only):** the launcher keeps a random token in `~/.config/ds4xtend/agent-token` (mode 600) and opens the dashboard with it in the URL fragment, which browsers don't send to servers. The dashboard stores it and removes it from the address bar. In a new browser, use the link the launcher prints.
+- **Approval tickets (agent tools only):** tools that change things need a single-use ticket tied to their exact arguments. The dashboard requests one after its Ask or Auto check, so a code path that skips that check is refused.
+
+These checks have limits:
+
+- **Commands aren't sandboxed.** File tools can't leave the locked folder, but `execute` and `run_command` start there and can reach anything your account can. Auto mode runs them without asking, so use it only on projects you'd trust an unattended agent with.
+- **A ticket can't prove a person approved.** The dashboard requests it, so anything holding the token could too. Programs running under your account, including agent commands, can read the token file.
+- **The sidecar has no token.** Web pages can't reach it, but other local programs can read its telemetry and saved session state.
+- **`ds4-server` isn't covered.** It's a separate project, and `--cors` makes it answer any origin, so a web page could send prompts to your local model while it's running.
+- **`file://` is chat only.** Opened directly from disk, the dashboard can't reach the agent tools or sidecar.
+
+Don't expose these ports to a network or run them on a shared machine.
 
 ## Known issues
 
@@ -230,4 +252,4 @@ Talks to **ds4-server** ([antirez/ds4](https://github.com/antirez/ds4) · DeepSe
 
 Project and dashboard inspiration from **Prompt Engineering** and his [YouTube video](https://www.youtube.com/watch?v=9gHcmhUDJfw) — thank you.
 
-Vibe coding assistance from [Claude](https://claude.ai) by Anthropic.
+AI coding agents ([Claude](https://claude.ai) by Anthropic) wrote most of the code. I set the specifications, architecture and test gates.
