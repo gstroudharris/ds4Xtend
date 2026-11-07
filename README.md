@@ -1,7 +1,8 @@
 # ds4Xtend
 
-A UIXtend-styled HTML frontend for **ds4-server** (antirez/ds4 · DwarfStar). Standalone repo —
-it talks to ds4-server over HTTP, with no source dependency on ds4.
+A GUI and automation layer for **ds4-server** (antirez/ds4 · DwarfStar). I built it to run a quantized DeepSeek V4 Flash
+(284 billion total parameters) on Linux on a Bosgame M4 mini PC's integrated Radeon 780M, which isn't an official ROCm target.
+Standalone repo — it talks to ds4-server over HTTP, with no source dependency on ds4.
 
 ## Features
 
@@ -174,6 +175,22 @@ These checks have limits:
 
 Don't expose these ports to a network or run them on a shared machine.
 
+## Tests
+
+There are 118 tests for the agent tools and localhost services. They use only Python's standard `unittest`, and they run on Linux because the sidecar and `execute` do.
+
+- `code/Agent_Tools/test_guard.py` (28): starts the real HTTP handlers on free ports and sends the requests a hostile web page or a stray local program would send.
+- `code/Agent_Tools/test_tools.py` (76): edge cases and safety checks for the tool registry.
+- `code/Agent_Tools/test_jobs.py` (14): spawns real short-lived processes to check that every cleanup layer reaps them.
+
+Run them from `code/Agent_Tools`:
+
+```bash
+python3 test_guard.py
+python3 test_tools.py
+python3 test_jobs.py
+```
+
 ## Known issues
 
 ### AMD 780M / gfx1103 (ROCm): GPU MES hang → ds4-server crash
@@ -252,4 +269,4 @@ Talks to **ds4-server** ([antirez/ds4](https://github.com/antirez/ds4) · DeepSe
 
 Project and dashboard inspiration from **Prompt Engineering** and his [YouTube video](https://www.youtube.com/watch?v=9gHcmhUDJfw) — thank you.
 
-AI coding agents ([Claude](https://claude.ai) by Anthropic) wrote most of the code. I set the specifications, architecture and test gates.
+I set the specifications, architecture and test gates, and AI coding agents ([Claude](https://claude.ai) by Anthropic) handled most of the implementation.
